@@ -63,7 +63,9 @@ public final class ChatClient {
             System.out.println("Account action must be register or login.");
             return;
         }
-        char[] password = console.readPassword("Password (minimum 12 characters): ");
+        String passwordPrompt = action.equalsIgnoreCase("register")
+                ? "Password (minimum 12 characters): " : "Password: ";
+        char[] password = console.readPassword(passwordPrompt);
         if (password == null) {
             System.out.println("No password was provided.");
             return;

@@ -170,7 +170,11 @@ public final class RelayServer {
         if ("LOGIN".equals(action)) {
             AccountService.LoginResult result = accounts.authenticate(username, password);
             if (result == AccountService.LoginResult.AUTHENTICATED) return username;
-            connection.send("AUTH_ERROR\tLogin failed or temporarily throttled.");
+            if (result == AccountService.LoginResult.THROTTLED) {
+                connection.send("AUTH_ERROR\tLogin failed. Too many failed attempts; login is temporarily blocked for 60 seconds.");
+            } else {
+                connection.send("AUTH_ERROR\tLogin failed.");
+            }
             return null;
         }
         Arrays.fill(password, '\0');
