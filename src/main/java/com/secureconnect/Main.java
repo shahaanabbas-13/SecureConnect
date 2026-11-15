@@ -108,10 +108,10 @@ public final class Main {
         System.out.println("SecureConnect — local encrypted messaging prototype");
         System.out.println("Java: " + System.getProperty("java.version"));
         System.out.println();
-        System.out.println("Start relay:  java -cp target/classes com.secureconnect.Main server [port]");
-        System.out.println("Start client: java -cp target/classes com.secureconnect.Main client <username> <peer> [host] [port]");
-        System.out.println("Generate identity: java -cp target/classes com.secureconnect.Main identity-keygen <username>");
-        System.out.println("Attack lab: java -cp target/classes com.secureconnect.Main attack-proxy <eavesdrop|tamper|replay|key-substitution|masquerade|dos> [listenPort] [targetHost] [targetPort]");
+        System.out.println("Start relay:  java -jar target/secureconnect-1.0-SNAPSHOT.jar server [port]");
+        System.out.println("Start client: java -jar target/secureconnect-1.0-SNAPSHOT.jar client <username> <peer> [host] [port]");
+        System.out.println("Generate identity: java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen <username>");
+        System.out.println("Attack lab: java -jar target/secureconnect-1.0-SNAPSHOT.jar attack-proxy <eavesdrop|tamper|replay|key-substitution|masquerade|dos> [listenPort] [targetHost] [targetPort]");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");

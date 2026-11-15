@@ -75,8 +75,8 @@ mvn package
 Generate one identity for each user from the project folder:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main identity-keygen Alice
-java -cp target/classes com.secureconnect.Main identity-keygen Bob
+java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen Alice
+java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen Bob
 ```
 
 Each command creates private/public files under `keys\` and prints the public identity key and its SHA-256 fingerprint. Keep private files local, exchange public keys, and compare fingerprints over a trusted channel. Alice must pin Bob's public key, and Bob must pin Alice's.
@@ -86,21 +86,21 @@ Create the Alice and Bob account records by selecting `register` the first time 
 Open three PowerShell terminals in the project folder. In terminal 1, set the server keystore environment variables above and start the relay:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main server
+java -jar target/secureconnect-1.0-SNAPSHOT.jar server
 ```
 
 In terminals 2 and 3, set the client truststore environment variables above. In terminal 2, set Alice's verified public identity key and connect Bob:
 
 ```powershell
 $env:SECURECONNECT_TRUSTED_PEER_KEY = '<Alice public key from identity-keygen>'
-java -cp target/classes com.secureconnect.Main client Bob Alice
+java -jar target/secureconnect-1.0-SNAPSHOT.jar client Bob Alice
 ```
 
 In terminal 3, set Bob's verified public identity key and connect Alice:
 
 ```powershell
 $env:SECURECONNECT_TRUSTED_PEER_KEY = '<Bob public key from identity-keygen>'
-java -cp target/classes com.secureconnect.Main client Alice Bob
+java -jar target/secureconnect-1.0-SNAPSHOT.jar client Alice Bob
 ```
 
 After each client reports an authenticated encrypted session, Alice can type `/to Bob Hello Bob!`. Bob sees the decrypted message; Alice sees a delivery confirmation. Type `/logout` (or `/quit`) in each client, then press Ctrl+C in the relay terminal to stop the server. Usernames can contain 1–32 letters, digits, underscores, or hyphens. The relay defaults to port 5050 and binds only to `127.0.0.1`. Passwords are hidden when launched from a terminal with `System.console()`; some IDE consoles do not support hidden input.

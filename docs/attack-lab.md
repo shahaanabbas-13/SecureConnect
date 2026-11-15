@@ -18,8 +18,8 @@ Build and create Alice and Bob's identity keys once if needed:
 
 ```powershell
 mvn package
-java -cp target/classes com.secureconnect.Main identity-keygen Alice
-java -cp target/classes com.secureconnect.Main identity-keygen Bob
+java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen Alice
+java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen Bob
 ```
 
 Compare the printed SHA-256 fingerprints through a trusted channel. Use four PowerShell terminals in the project folder:
@@ -29,7 +29,7 @@ Compare the printed SHA-256 fingerprints through a trusted channel. Use four Pow
    ```powershell
    $env:SECURECONNECT_TLS_KEYSTORE = (Resolve-Path .\certs\server.p12).Path
    $env:SECURECONNECT_TLS_KEYSTORE_PASSWORD = '<server keystore password>'
-   java -cp target/classes com.secureconnect.Main server
+   java -jar target/secureconnect-1.0-SNAPSHOT.jar server
    ```
 
 2. In terminal 2, set both the proxy keystore and upstream truststore variables, then start one mode:
@@ -39,7 +39,7 @@ Compare the printed SHA-256 fingerprints through a trusted channel. Use four Pow
    $env:SECURECONNECT_TLS_KEYSTORE_PASSWORD = '<server keystore password>'
    $env:SECURECONNECT_TLS_TRUSTSTORE = (Resolve-Path .\certs\client-truststore.p12).Path
    $env:SECURECONNECT_TLS_TRUSTSTORE_PASSWORD = '<truststore password>'
-   java -cp target/classes com.secureconnect.Main attack-proxy eavesdrop
+   java -jar target/secureconnect-1.0-SNAPSHOT.jar attack-proxy eavesdrop
    ```
 
 3. In terminal 3, set the client truststore variables and Bob's pinned Alice identity key:
@@ -48,7 +48,7 @@ Compare the printed SHA-256 fingerprints through a trusted channel. Use four Pow
    $env:SECURECONNECT_TLS_TRUSTSTORE = (Resolve-Path .\certs\client-truststore.p12).Path
    $env:SECURECONNECT_TLS_TRUSTSTORE_PASSWORD = '<truststore password>'
    $env:SECURECONNECT_TRUSTED_PEER_KEY = (Get-Content .\keys\Alice.ed25519.public -Raw).Trim()
-   java -cp target/classes com.secureconnect.Main client Bob Alice 127.0.0.1 5051
+   java -jar target/secureconnect-1.0-SNAPSHOT.jar client Bob Alice 127.0.0.1 5051
    ```
 
 4. In terminal 4, set the same truststore variables and Alice's pinned Bob identity key:
@@ -57,7 +57,7 @@ Compare the printed SHA-256 fingerprints through a trusted channel. Use four Pow
    $env:SECURECONNECT_TLS_TRUSTSTORE = (Resolve-Path .\certs\client-truststore.p12).Path
    $env:SECURECONNECT_TLS_TRUSTSTORE_PASSWORD = '<truststore password>'
    $env:SECURECONNECT_TRUSTED_PEER_KEY = (Get-Content .\keys\Bob.ed25519.public -Raw).Trim()
-   java -cp target/classes com.secureconnect.Main client Alice Bob 127.0.0.1 5051
+   java -jar target/secureconnect-1.0-SNAPSHOT.jar client Alice Bob 127.0.0.1 5051
    ```
 
 Choose `register` for each account the first time; choose `login` on later runs. Account passwords need at least 12 characters. Stop clients with `/logout`, then stop the proxy with Ctrl+C before changing modes. Keep both TLS environment settings in the proxy terminal for each run.
@@ -76,9 +76,9 @@ Choose `register` for each account the first time; choose `login` on later runs.
 For the masquerade scenario, stop Alice's legitimate client, create a Mallory identity if needed, start the proxy in `masquerade` mode, connect Bob as above, then try Mallory with Bob's key pinned:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main identity-keygen Mallory
+java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen Mallory
 $env:SECURECONNECT_TRUSTED_PEER_KEY = (Get-Content .\keys\Bob.ed25519.public -Raw).Trim()
-java -cp target/classes com.secureconnect.Main client Mallory Bob 127.0.0.1 5051
+java -jar target/secureconnect-1.0-SNAPSHOT.jar client Mallory Bob 127.0.0.1 5051
 ```
 
 Select `register` or `login` for Mallory. The proxy rewrites only the claimed username on login; the relay checks the password against Alice's verifier, so authentication fails. Do not register Mallory as Alice.
