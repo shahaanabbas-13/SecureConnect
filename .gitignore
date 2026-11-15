@@ -1,0 +1,29 @@
+# Maven build output
+target/
+
+# IDE and editor files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.iml
+
+# Java runtime artifacts
+*.class
+hs_err_pid*
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Local experimental output (keep directory placeholders)
+experiments/results/*
+!experiments/results/.gitkeep
+evidence/generated/*
+!evidence/generated/.gitkeep
