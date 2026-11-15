@@ -2,9 +2,9 @@
 
 SecureConnect is an educational Java messaging project for studying end-to-end encryption, authenticated key establishment, replay protection, controlled attack simulations, and their performance costs.
 
-## Current milestone: Phase 1 — Environment and project foundation
+## Current milestone: AES-256-GCM encrypted two-user messaging
 
-The repository is a Java 21 Maven project. Phase 1 establishes a reproducible local setup and documents the system boundaries before implementing messaging or cryptography.
+The repository is a Java 21 Maven project. Alice and Bob encrypt and decrypt locally with Java's AES/GCM provider. The loopback-only relay forwards the encrypted envelope and does not receive message plaintext or the demo key.
 
 ### Verify the Windows development environment
 
@@ -33,17 +33,59 @@ Alice's and Bob's Java clients own their private keys and perform encryption, au
 
 The supplied sketches include both an end-to-end encrypted relay and diagrams with a server/database. We use the relay model: backend persistence is permitted for ciphertext and metadata only. The system will not claim that public-key encryption alone provides sender identity, or that X25519 alone authenticates a key exchange.
 
+## Run the local encrypted messaging demonstration
+
+Build the project:
+
+```powershell
+mvn package
+```
+
+Generate a temporary 256-bit key once:
+
+```powershell
+java -cp target/classes com.secureconnect.Main keygen
+```
+
+Copy the printed Base64 value. Open three PowerShell terminals in the project folder. In terminals 2 and 3, set the same key value in that terminal's environment. Replace the placeholder with the generated value:
+
+```powershell
+$env:SECURECONNECT_DEMO_KEY = '<paste-generated-key-here>'
+```
+
+Start the relay in terminal 1 (the relay does not need the key):
+
+```powershell
+java -cp target/classes com.secureconnect.Main server
+```
+
+Connect Bob in terminal 2 after setting the environment variable:
+
+```powershell
+java -cp target/classes com.secureconnect.Main client Bob
+```
+
+Connect Alice in terminal 3 after setting the same environment variable:
+
+```powershell
+java -cp target/classes com.secureconnect.Main client Alice
+```
+
+In Alice's terminal, type `/to Bob Hello Bob!`. Bob receives the locally decrypted message; Alice sees a delivery confirmation. Type `/quit` in each client, then press Ctrl+C in the relay terminal to stop the server. Usernames can contain 1–32 letters, digits, underscores, or hyphens. The relay defaults to port 5050 and binds only to `127.0.0.1`.
+
+The keygen command prints a temporary shared **demo** key. The same key must be configured for both clients, and it is deliberately not sent to the relay. Manually copying a shared key is not authenticated key exchange: any key holder can forge messages, and key substitution is not prevented. The relay remains localhost-only. Use dummy messages, do not commit or reuse the key, and do not treat this as a production protocol. AES-GCM uses a fresh random 96-bit nonce per message; this demo is for a small number of local messages, not high-volume use under a long-lived key.
+
 ## Planned implementation sequence
 
-1. **Foundation (current):** verify Java/Maven/VS Code, keep the Maven build reproducible, establish project conventions and architecture boundaries.
-2. **Secure messaging baseline:** implement a local two-user messaging flow and relay/API boundary using Java. Keep initial dummy messages non-sensitive; introduce persistence only after choosing a Java-compatible store.
-3. **Authenticated encryption:** add AES-256-GCM on clients and carry nonce, ciphertext, and tag; reject authentication failures.
+1. **Foundation (complete):** verify Java/Maven/VS Code, keep the Maven build reproducible, and document architecture boundaries.
+2. **Plaintext messaging baseline (complete):** local two-user messaging through a Java socket relay.
+3. **AES-256-GCM (complete):** encrypt and decrypt on clients, carry a nonce, ciphertext, and tag, bind sender/recipient routing context as associated data, and reject authentication failures.
 4. **Key establishment:** use X25519 and HKDF-SHA-256 for session keys, with Ed25519-authenticated identity/key material. State clearly that this is an educational protocol, not a production replacement for a reviewed messaging protocol.
 5. **Replay and key lifecycle:** add authenticated message identifiers/sequence state, duplicate rejection, and controlled session-key rotation.
 6. **Controlled attack experiments:** demonstrate ciphertext observation, tampering, replay, impersonation/key substitution, and rate limiting only against the local test system.
 7. **Evaluation and reporting:** repeat trials across 1 KB, 10 KB, 100 KB, and 1 MB payloads; report latency, throughput, delivery and rejection outcomes, and variability. Keep raw CSV, graph source, and evidence reproducible.
 
-The attached six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. This repository follows the latter numbering for the current setup milestone; the proposal's basic-messaging work is the next implementation milestone. We will adapt MongoDB/Socket.IO from the proposal rather than adopt them automatically, because the finalized implementation is Java-based.
+The attached six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Environment setup, basic messaging, and client-side AES-GCM are complete. We will adapt MongoDB/Socket.IO from the proposal rather than adopt them automatically, because the finalized implementation is Java-based.
 
 ## Research work to complete
 
@@ -52,14 +94,5 @@ The attached six-phase proposal places basic messaging first, then encryption, k
 - Define baseline/proposed comparisons and experiment protocol before collecting results. Expected outcomes are hypotheses, not reported findings.
 - Record implementation versions, JVM warm-up, hardware/OS, payload sizes, trial counts, and summary statistics so measurements can be reproduced.
 - Keep secrets and private keys out of source control and audit logs; never log message plaintext or authentication tokens.
-
-## Build and run
-
-After verifying the tools above:
-
-```powershell
-mvn package
-java -cp target/classes com.secureconnect.Main
-```
 
 JUnit 5 is already configured for later security and behavior tests.
