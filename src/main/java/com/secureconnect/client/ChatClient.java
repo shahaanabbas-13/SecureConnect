@@ -1,6 +1,7 @@
 package com.secureconnect.client;
 
 import com.secureconnect.crypto.AesGcmCrypto;
+import com.secureconnect.keymanagement.SessionKeyExchange;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -9,16 +10,22 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.util.Base64;
 
-/** Console chat client for the local plaintext messaging milestone. */
+/** Console chat client with signed ephemeral X25519 key establishment. */
 public final class ChatClient {
     private final String host;
     private final int port;
     private final String username;
-    private final AesGcmCrypto crypto;
+    private final String peerUsername;
+    private final PublicKey trustedPeerSigningKey;
+    private final SessionKeyExchange.LocalSession localSession;
+    private volatile AesGcmCrypto crypto;
 
-    public ChatClient(String host, int port, String username, byte[] demoKey) {
+    public ChatClient(String host, int port, String username, String peerUsername,
+                      PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey) {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("host cannot be empty");
         }
@@ -28,10 +35,16 @@ public final class ChatClient {
         if (username == null || !username.matches("[A-Za-z0-9_-]{1,32}")) {
             throw new IllegalArgumentException("username must use 1-32 letters, digits, underscores, or hyphens");
         }
+        if (peerUsername == null || !peerUsername.matches("[A-Za-z0-9_-]{1,32}")
+                || username.equals(peerUsername)) {
+            throw new IllegalArgumentException("peer username must be valid and different from this username");
+        }
         this.host = host;
         this.port = port;
         this.username = username;
-        this.crypto = new AesGcmCrypto(demoKey);
+        this.peerUsername = peerUsername;
+        this.trustedPeerSigningKey = trustedPeerSigningKey;
+        this.localSession = SessionKeyExchange.start(username, identityPrivateKey);
     }
 
     public void run() throws IOException {
@@ -52,9 +65,13 @@ public final class ChatClient {
                 throw new IOException("unexpected response from relay");
             }
 
-            System.out.println("Connected to relay as " + username + " (AES-256-GCM enabled).");
-            System.out.println("The shared demo key is manually provisioned; this is not secure key exchange.");
-            System.out.println("Send with: /to <username> <message>    Exit with: /quit");
+            serverOutput.write(localSession.announcement());
+            serverOutput.newLine();
+            serverOutput.flush();
+
+            System.out.println("Connected to local relay as " + username + ".");
+            System.out.println("Waiting for " + peerUsername + " to establish an authenticated session.");
+            System.out.println("Send with: /to " + peerUsername + " <message>    Exit with: /quit");
 
             Thread receiver = new Thread(() -> receiveMessages(serverInput), "secureconnect-receiver");
             receiver.setDaemon(true);
@@ -78,26 +95,26 @@ public final class ChatClient {
     }
 
     private void sendMessage(BufferedWriter serverOutput, String input) throws IOException {
-        if (!input.startsWith("/to ")) {
-            System.out.println("Use /to <username> <message> or /quit.");
+        String prefix = "/to " + peerUsername + " ";
+        if (!input.startsWith(prefix)) {
+            System.out.println("Use /to " + peerUsername + " <message> or /quit.");
             return;
         }
-        int recipientEnd = input.indexOf(' ', 4);
-        if (recipientEnd < 0 || recipientEnd == input.length() - 1) {
-            System.out.println("Usage: /to <username> <message>");
+        String message = input.substring(prefix.length());
+        if (message.isBlank()) {
+            System.out.println("Message cannot be empty.");
             return;
         }
-        String recipient = input.substring(4, recipientEnd);
-        String message = input.substring(recipientEnd + 1);
-        if (!recipient.matches("[A-Za-z0-9_-]{1,32}")) {
-            System.out.println("Recipient must use 1-32 letters, digits, underscores, or hyphens.");
+        AesGcmCrypto activeCrypto = crypto;
+        if (activeCrypto == null) {
+            System.out.println("Secure session is not ready; message was not sent.");
             return;
         }
 
-        String encryptedMessage = crypto.encrypt(message, username, recipient);
+        String encryptedMessage = activeCrypto.encrypt(message, username, peerUsername);
         String encodedEnvelope = Base64.getEncoder().encodeToString(
                 encryptedMessage.getBytes(StandardCharsets.UTF_8));
-        serverOutput.write("SEND\t" + recipient + "\t" + encodedEnvelope);
+        serverOutput.write("SEND\t" + peerUsername + "\t" + encodedEnvelope);
         serverOutput.newLine();
         serverOutput.flush();
     }
@@ -106,24 +123,18 @@ public final class ChatClient {
         try {
             String line;
             while ((line = serverInput.readLine()) != null) {
-                String[] fields = line.split("\\t", 3);
+                String[] fields = line.split("\\t", 5);
                 switch (fields[0]) {
-                    case "DELIVER" -> {
-                        if (fields.length == 3) {
-                            try {
-                                String encryptedMessage = new String(Base64.getDecoder().decode(fields[2]),
-                                        StandardCharsets.UTF_8);
-                                String message = crypto.decrypt(encryptedMessage, fields[1], username);
-                                System.out.println("\n[" + fields[1] + "]: " + message);
-                                System.out.print("> ");
-                            } catch (IllegalArgumentException | SecurityException exception) {
-                                System.out.println("\n[SECURITY] Message rejected: " + exception.getMessage());
-                                System.out.print("> ");
-                            }
+                    case "PEERKEY" -> handlePeerKey(fields);
+                    case "PEERLEFT" -> {
+                        if (fields.length >= 2 && peerUsername.equals(fields[1])) {
+                            crypto = null;
+                            System.out.println("\n[SECURITY] Peer disconnected; session key cleared.");
                         }
                     }
+                    case "DELIVER" -> handleDelivery(fields);
                     case "SENT" -> {
-                        if (fields.length == 2) {
+                        if (fields.length >= 2) {
                             System.out.println("Message delivered to " + fields[1] + ".");
                         }
                     }
@@ -134,6 +145,44 @@ public final class ChatClient {
             }
         } catch (IOException exception) {
             System.out.println("Relay connection ended: " + exception.getMessage());
+        }
+    }
+
+    private void handlePeerKey(String[] fields) {
+        if (fields.length != 5 || !peerUsername.equals(fields[1])) {
+            System.out.println("\n[SECURITY] Ignored unexpected peer key announcement.");
+            return;
+        }
+        try {
+            byte[] sessionKey = SessionKeyExchange.deriveSessionKey(
+                    username, peerUsername, localSession, fields[2], fields[3], fields[4],
+                    trustedPeerSigningKey);
+            crypto = new AesGcmCrypto(sessionKey);
+            java.util.Arrays.fill(sessionKey, (byte) 0);
+            System.out.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
+        } catch (IllegalArgumentException | SecurityException exception) {
+            crypto = null;
+            System.out.println("\n[SECURITY] Peer key rejected: " + exception.getMessage());
+        }
+    }
+
+    private void handleDelivery(String[] fields) {
+        if (fields.length != 3 || !peerUsername.equals(fields[1])) {
+            System.out.println("\n[SECURITY] Ignored message from an unexpected peer.");
+            return;
+        }
+        AesGcmCrypto activeCrypto = crypto;
+        if (activeCrypto == null) {
+            System.out.println("\n[SECURITY] Message rejected; no authenticated session is active.");
+            return;
+        }
+        try {
+            String encryptedMessage = new String(Base64.getDecoder().decode(fields[2]),
+                    StandardCharsets.UTF_8);
+            String message = activeCrypto.decrypt(encryptedMessage, fields[1], username);
+            System.out.println("\n[" + fields[1] + "]: " + message);
+        } catch (IllegalArgumentException | SecurityException exception) {
+            System.out.println("\n[SECURITY] Message rejected: " + exception.getMessage());
         }
     }
 }

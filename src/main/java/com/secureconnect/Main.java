@@ -1,7 +1,7 @@
 package com.secureconnect;
 
 import com.secureconnect.client.ChatClient;
-import com.secureconnect.crypto.AesGcmCrypto;
+import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
 
 import java.io.IOException;
@@ -22,7 +22,7 @@ public final class Main {
             switch (args[0].toLowerCase()) {
                 case "server" -> runServer(args);
                 case "client" -> runClient(args);
-                case "keygen" -> runKeygen(args);
+                case "identity-keygen" -> runIdentityKeygen(args);
                 default -> printUsage();
             }
         } catch (IllegalArgumentException exception) {
@@ -44,26 +44,34 @@ public final class Main {
     }
 
     private static void runClient(String[] args) throws IOException {
-        if (args.length < 2 || args.length > 4) {
-            throw new IllegalArgumentException("client requires a username and optional host/port");
+        if (args.length < 3 || args.length > 5) {
+            throw new IllegalArgumentException("client requires a username, peer username, and optional host/port");
         }
         String username = args[1];
-        String host = args.length >= 3 ? args[2] : "127.0.0.1";
-        int port = args.length == 4 ? parsePort(args[3]) : DEFAULT_PORT;
-        String encodedKey = System.getenv("SECURECONNECT_DEMO_KEY");
-        if (encodedKey == null || encodedKey.isBlank()) {
-            throw new IllegalArgumentException("set SECURECONNECT_DEMO_KEY to the same generated key in both client terminals");
+        String peerUsername = args[2];
+        String host = args.length >= 4 ? args[3] : "127.0.0.1";
+        int port = args.length == 5 ? parsePort(args[4]) : DEFAULT_PORT;
+        String encodedTrustedKey = System.getenv("SECURECONNECT_TRUSTED_PEER_KEY");
+        if (encodedTrustedKey == null || encodedTrustedKey.isBlank()) {
+            throw new IllegalArgumentException("set SECURECONNECT_TRUSTED_PEER_KEY to the verified peer identity public key");
         }
-        new ChatClient(host, port, username, AesGcmCrypto.decodeKey(encodedKey)).run();
+        new ChatClient(host, port, username, peerUsername,
+                IdentityKeys.loadPrivate(username),
+                IdentityKeys.decodePinnedPublicKey(encodedTrustedKey)).run();
     }
 
-    private static void runKeygen(String[] args) {
-        if (args.length != 1) {
-            throw new IllegalArgumentException("keygen does not accept arguments");
+    private static void runIdentityKeygen(String[] args) throws IOException {
+        if (args.length != 2) {
+            throw new IllegalArgumentException("identity-keygen requires a username");
         }
-        System.out.println("Temporary AES-256 demo key (keep it out of the relay terminal):");
-        System.out.println(AesGcmCrypto.generateKey());
-        System.out.println("Copy the same value into SECURECONNECT_DEMO_KEY in both client terminals.");
+        String publicKey = IdentityKeys.generate(args[1]);
+        System.out.println("Generated Ed25519 identity for " + args[1] + ".");
+        System.out.println("Private key file: " + IdentityKeys.privatePath(args[1]).toAbsolutePath());
+        System.out.println("Public key file:  " + IdentityKeys.publicPath(args[1]).toAbsolutePath());
+        System.out.println("Identity public key (send to the peer over a trusted channel):");
+        System.out.println(publicKey);
+        System.out.println("SHA-256 fingerprint (compare with the peer out of band):");
+        System.out.println(IdentityKeys.fingerprint(publicKey));
     }
 
     private static int parsePort(String value) {
@@ -79,14 +87,14 @@ public final class Main {
     }
 
     private static void printUsage() {
-        System.out.println("SecureConnect — local plaintext messaging prototype");
+        System.out.println("SecureConnect — local encrypted messaging prototype");
         System.out.println("Java: " + System.getProperty("java.version"));
         System.out.println();
         System.out.println("Start relay:  java -cp target/classes com.secureconnect.Main server [port]");
-        System.out.println("Start client: java -cp target/classes com.secureconnect.Main client <username> [host] [port]");
-        System.out.println("Generate key: java -cp target/classes com.secureconnect.Main keygen");
+        System.out.println("Start client: java -cp target/classes com.secureconnect.Main client <username> <peer> [host] [port]");
+        System.out.println("Generate identity: java -cp target/classes com.secureconnect.Main identity-keygen <username>");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
-        System.out.println("AES-GCM encrypts message content; manually sharing this demo key is not key exchange.");
-        System.out.println("Use only on localhost with dummy messages; this is not a production protocol.");
+        System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
+        System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");
     }
 }

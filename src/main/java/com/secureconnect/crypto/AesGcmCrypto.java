@@ -80,25 +80,6 @@ public final class AesGcmCrypto {
         }
     }
 
-    public static byte[] decodeKey(String base64Key) {
-        final byte[] keyBytes;
-        try {
-            keyBytes = Base64.getDecoder().decode(base64Key);
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalArgumentException("SECURECONNECT_DEMO_KEY must be valid Base64", exception);
-        }
-        if (keyBytes.length != KEY_LENGTH_BYTES) {
-            throw new IllegalArgumentException("SECURECONNECT_DEMO_KEY must decode to exactly 32 bytes");
-        }
-        return keyBytes;
-    }
-
-    public static String generateKey() {
-        byte[] keyBytes = new byte[KEY_LENGTH_BYTES];
-        new SecureRandom().nextBytes(keyBytes);
-        return Base64.getEncoder().encodeToString(keyBytes);
-    }
-
     private static byte[] context(String sender, String recipient) {
         return ("SecureConnect-v1\u0000" + sender + "\u0000" + recipient)
                 .getBytes(StandardCharsets.UTF_8);

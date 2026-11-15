@@ -15,10 +15,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Local-only plaintext relay for the initial messaging milestone. */
+/** Local-only ciphertext relay for the educational messaging prototype. */
 public final class RelayServer {
     private final int port;
     private final Map<String, ClientConnection> clients = new ConcurrentHashMap<>();
+    private final Map<String, String> keyAnnouncements = new ConcurrentHashMap<>();
     private final ExecutorService clientWorkers = Executors.newCachedThreadPool();
 
     public RelayServer(int port) {
@@ -59,13 +60,22 @@ public final class RelayServer {
 
             connection.send("WELCOME\t" + username);
             System.out.println(username + " connected from localhost.");
+            for (Map.Entry<String, String> announcement : keyAnnouncements.entrySet()) {
+                if (!announcement.getKey().equals(username)) {
+                    connection.send(announcement.getValue());
+                }
+            }
 
             String line;
             while ((line = connection.input.readLine()) != null) {
                 if ("QUIT".equals(line)) {
                     break;
                 }
-                handleMessage(connection, line);
+                if (line.startsWith("KEY\t")) {
+                    handleKeyAnnouncement(connection, line);
+                } else {
+                    handleMessage(connection, line);
+                }
             }
         } catch (IOException | IllegalArgumentException exception) {
             if (connection != null && connection.username != null) {
@@ -75,8 +85,12 @@ public final class RelayServer {
         } finally {
             if (connection != null) {
                 if (connection.username != null) {
-                    clients.remove(connection.username, connection);
-                    System.out.println(connection.username + " disconnected.");
+                    boolean wasRegistered = clients.remove(connection.username, connection);
+                    if (wasRegistered) {
+                        keyAnnouncements.remove(connection.username);
+                        broadcast("PEERLEFT\t" + connection.username, connection);
+                        System.out.println(connection.username + " disconnected.");
+                    }
                 }
                 connection.close();
             } else {
@@ -84,6 +98,30 @@ public final class RelayServer {
                     socket.close();
                 } catch (IOException ignored) {
                     // The peer may already have closed the socket.
+                }
+            }
+        }
+    }
+
+    private void handleKeyAnnouncement(ClientConnection sender, String line) throws IOException {
+        String[] fields = line.split("\\t", 4);
+        if (fields.length != 4) {
+            sender.send("ERROR\tMalformed key announcement.");
+            return;
+        }
+        String forwarded = "PEERKEY\t" + sender.username + "\t" + fields[1]
+                + "\t" + fields[2] + "\t" + fields[3];
+        keyAnnouncements.put(sender.username, forwarded);
+        broadcast(forwarded, sender);
+    }
+
+    private void broadcast(String message, ClientConnection excluded) {
+        for (ClientConnection client : clients.values()) {
+            if (client != excluded) {
+                try {
+                    client.send(message);
+                } catch (IOException ignored) {
+                    // The recipient's handler will remove a disconnected client.
                 }
             }
         }

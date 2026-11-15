@@ -17,6 +17,7 @@ hs_err_pid*
 !.env.example
 *.jks
 *.keystore
+keys/
 
 # OS files
 Thumbs.db

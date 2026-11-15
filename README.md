@@ -2,9 +2,9 @@
 
 SecureConnect is an educational Java messaging project for studying end-to-end encryption, authenticated key establishment, replay protection, controlled attack simulations, and their performance costs.
 
-## Current milestone: AES-256-GCM encrypted two-user messaging
+## Current milestone: Authenticated session key establishment
 
-The repository is a Java 21 Maven project. Alice and Bob encrypt and decrypt locally with Java's AES/GCM provider. The loopback-only relay forwards the encrypted envelope and does not receive message plaintext or the demo key.
+The Java 21 prototype establishes an encrypted session between two console clients. Ed25519 identity keys sign ephemeral X25519 public keys; clients verify a pinned peer identity, then use HKDF-SHA-256 to derive an AES-256-GCM session key. The local relay forwards signed key announcements and encrypted message envelopes but never receives the session key or plaintext.
 
 ### Verify the Windows development environment
 
@@ -41,51 +41,50 @@ Build the project:
 mvn package
 ```
 
-Generate a temporary 256-bit key once:
+Generate one identity for each user from the project folder:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main keygen
+java -cp target/classes com.secureconnect.Main identity-keygen Alice
+java -cp target/classes com.secureconnect.Main identity-keygen Bob
 ```
 
-Copy the printed Base64 value. Open three PowerShell terminals in the project folder. In terminals 2 and 3, set the same key value in that terminal's environment. Replace the placeholder with the generated value:
+Each command creates private/public files under `keys\` and prints the public identity key and its SHA-256 fingerprint. Keep private files local, exchange public keys, and compare fingerprints over a trusted channel. Alice must pin Bob's public key, and Bob must pin Alice's.
 
-```powershell
-$env:SECURECONNECT_DEMO_KEY = '<paste-generated-key-here>'
-```
-
-Start the relay in terminal 1 (the relay does not need the key):
+Open three PowerShell terminals in the project folder. Start the relay in terminal 1:
 
 ```powershell
 java -cp target/classes com.secureconnect.Main server
 ```
 
-Connect Bob in terminal 2 after setting the environment variable:
+In terminal 2, set Alice's verified public identity key and connect Bob:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main client Bob
+$env:SECURECONNECT_TRUSTED_PEER_KEY = '<Alice public key from identity-keygen>'
+java -cp target/classes com.secureconnect.Main client Bob Alice
 ```
 
-Connect Alice in terminal 3 after setting the same environment variable:
+In terminal 3, set Bob's verified public identity key and connect Alice:
 
 ```powershell
-java -cp target/classes com.secureconnect.Main client Alice
+$env:SECURECONNECT_TRUSTED_PEER_KEY = '<Bob public key from identity-keygen>'
+java -cp target/classes com.secureconnect.Main client Alice Bob
 ```
 
-In Alice's terminal, type `/to Bob Hello Bob!`. Bob receives the locally decrypted message; Alice sees a delivery confirmation. Type `/quit` in each client, then press Ctrl+C in the relay terminal to stop the server. Usernames can contain 1–32 letters, digits, underscores, or hyphens. The relay defaults to port 5050 and binds only to `127.0.0.1`.
+After each client reports an authenticated encrypted session, Alice can type `/to Bob Hello Bob!`. Bob sees the decrypted message; Alice sees a delivery confirmation. Type `/quit` in each client, then press Ctrl+C in the relay terminal to stop the server. Usernames can contain 1–32 letters, digits, underscores, or hyphens. The relay defaults to port 5050 and binds only to `127.0.0.1`.
 
-The keygen command prints a temporary shared **demo** key. The same key must be configured for both clients, and it is deliberately not sent to the relay. Manually copying a shared key is not authenticated key exchange: any key holder can forge messages, and key substitution is not prevented. The relay remains localhost-only. Use dummy messages, do not commit or reuse the key, and do not treat this as a production protocol. AES-GCM uses a fresh random 96-bit nonce per message; this demo is for a small number of local messages, not high-volume use under a long-lived key.
+Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. The `.gitignore` excludes `keys\`; do not commit or share private files. This local storage is only for the educational prototype. Verify public identity keys out of band; an unverified key copied through the relay allows key substitution. Replay handling, durable identity storage, TLS, account authentication, and production-grade session lifecycle are still future work. Use localhost and dummy messages only.
 
 ## Planned implementation sequence
 
 1. **Foundation (complete):** verify Java/Maven/VS Code, keep the Maven build reproducible, and document architecture boundaries.
 2. **Plaintext messaging baseline (complete):** local two-user messaging through a Java socket relay.
 3. **AES-256-GCM (complete):** encrypt and decrypt on clients, carry a nonce, ciphertext, and tag, bind sender/recipient routing context as associated data, and reject authentication failures.
-4. **Key establishment:** use X25519 and HKDF-SHA-256 for session keys, with Ed25519-authenticated identity/key material. State clearly that this is an educational protocol, not a production replacement for a reviewed messaging protocol.
+4. **Authenticated key establishment (prototype complete):** signed ephemeral X25519 public keys, pinned Ed25519 identities, and HKDF-SHA-256 session keys.
 5. **Replay and key lifecycle:** add authenticated message identifiers/sequence state, duplicate rejection, and controlled session-key rotation.
 6. **Controlled attack experiments:** demonstrate ciphertext observation, tampering, replay, impersonation/key substitution, and rate limiting only against the local test system.
 7. **Evaluation and reporting:** repeat trials across 1 KB, 10 KB, 100 KB, and 1 MB payloads; report latency, throughput, delivery and rejection outcomes, and variability. Keep raw CSV, graph source, and evidence reproducible.
 
-The attached six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Environment setup, basic messaging, and client-side AES-GCM are complete. We will adapt MongoDB/Socket.IO from the proposal rather than adopt them automatically, because the finalized implementation is Java-based.
+The attached six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Setup, basic messaging, AES-GCM, and an educational authenticated key-establishment prototype are complete. We will adapt MongoDB/Socket.IO from the proposal rather than adopt them automatically, because the finalized implementation is Java-based.
 
 ## Research work to complete
 
