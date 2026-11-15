@@ -1,6 +1,7 @@
 package com.secureconnect;
 
 import com.secureconnect.client.ChatClient;
+import com.secureconnect.attacks.AttackProxy;
 import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
 
@@ -23,6 +24,7 @@ public final class Main {
                 case "server" -> runServer(args);
                 case "client" -> runClient(args);
                 case "identity-keygen" -> runIdentityKeygen(args);
+                case "attack-proxy" -> runAttackProxy(args);
                 default -> printUsage();
             }
         } catch (IllegalArgumentException exception) {
@@ -74,6 +76,17 @@ public final class Main {
         System.out.println(IdentityKeys.fingerprint(publicKey));
     }
 
+    private static void runAttackProxy(String[] args) throws IOException {
+        if (args.length < 2 || args.length > 5) {
+            throw new IllegalArgumentException("attack-proxy requires a mode and optional listen/target settings");
+        }
+        AttackProxy.Mode mode = AttackProxy.Mode.parse(args[1]);
+        int listenPort = args.length >= 3 ? parsePort(args[2]) : 5051;
+        String targetHost = args.length >= 4 ? args[3] : "127.0.0.1";
+        int targetPort = args.length == 5 ? parsePort(args[4]) : DEFAULT_PORT;
+        new AttackProxy(mode, listenPort, targetHost, targetPort).start();
+    }
+
     private static int parsePort(String value) {
         try {
             int port = Integer.parseInt(value);
@@ -93,6 +106,7 @@ public final class Main {
         System.out.println("Start relay:  java -cp target/classes com.secureconnect.Main server [port]");
         System.out.println("Start client: java -cp target/classes com.secureconnect.Main client <username> <peer> [host] [port]");
         System.out.println("Generate identity: java -cp target/classes com.secureconnect.Main identity-keygen <username>");
+        System.out.println("Attack proxy: java -cp target/classes com.secureconnect.Main attack-proxy <eavesdrop|tamper|replay|key-substitution> [listenPort] [targetHost] [targetPort]");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");

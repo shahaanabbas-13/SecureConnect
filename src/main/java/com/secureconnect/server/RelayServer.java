@@ -34,7 +34,7 @@ public final class RelayServer {
         try (ServerSocket serverSocket = new ServerSocket(port, 50, loopback)) {
             System.out.println("SecureConnect relay listening on " + loopback.getHostAddress()
                     + ":" + port);
-            System.out.println("Plaintext prototype — do not expose this relay to a network.");
+            System.out.println("Local prototype without TLS or account authentication; do not expose it to a network.");
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
                 clientWorkers.execute(() -> handleClient(socket));

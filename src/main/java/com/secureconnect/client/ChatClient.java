@@ -99,12 +99,16 @@ public final class ChatClient {
     }
 
     private void sendMessage(BufferedWriter serverOutput, String input) throws IOException {
-        String prefix = "/to " + peerUsername + " ";
-        if (!input.startsWith(prefix)) {
+        if (!input.regionMatches(true, 0, "/to ", 0, 4)) {
             System.out.println("Use /to " + peerUsername + " <message> or /quit.");
             return;
         }
-        String message = input.substring(prefix.length());
+        int recipientEnd = input.indexOf(' ', 4);
+        if (recipientEnd < 0 || !peerUsername.equalsIgnoreCase(input.substring(4, recipientEnd))) {
+            System.out.println("Use /to " + peerUsername + " <message> or /quit.");
+            return;
+        }
+        String message = input.substring(recipientEnd + 1);
         if (message.isBlank()) {
             System.out.println("Message cannot be empty.");
             return;

@@ -2,7 +2,7 @@
 
 SecureConnect is an educational Java messaging project for studying end-to-end encryption, authenticated key establishment, replay protection, controlled attack simulations, and their performance costs.
 
-## Current milestone: Authenticated session key establishment
+## Current milestone: Controlled attack simulation
 
 The Java 21 prototype establishes an encrypted session between two console clients. Ed25519 identity keys sign ephemeral X25519 public keys; clients verify a pinned peer identity, then use HKDF-SHA-256 to derive an AES-256-GCM session key. The local relay forwards signed key announcements and encrypted message envelopes but never receives the session key or plaintext.
 
@@ -81,10 +81,14 @@ Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. Th
 3. **AES-256-GCM (complete):** encrypt and decrypt on clients, carry a nonce, ciphertext, and tag, bind sender/recipient routing context as associated data, and reject authentication failures.
 4. **Authenticated key establishment (prototype complete):** signed ephemeral X25519 public keys, pinned Ed25519 identities, and HKDF-SHA-256 session keys.
 5. **Replay and key lifecycle (prototype complete):** authenticated per-direction sequence numbers reject duplicate/out-of-order messages; HKDF derives a new AES key epoch every 10 messages.
-6. **Controlled attack experiments:** demonstrate ciphertext observation, tampering, replay, impersonation/key substitution, and rate limiting only against the local test system.
+6. **Controlled attack experiments (prototype):** the localhost proxy demonstrates eavesdropping, tampering, replay, and signed-key substitution. Masquerade and denial-of-service/rate-limit experiments remain to be implemented.
 7. **Evaluation and reporting:** repeat trials across 1 KB, 10 KB, 100 KB, and 1 MB payloads; report latency, throughput, delivery and rejection outcomes, and variability. Keep raw CSV, graph source, and evidence reproducible.
 
 The attached six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Setup, basic messaging, AES-GCM, and an educational authenticated key-establishment prototype are complete. We will adapt MongoDB/Socket.IO from the proposal rather than adopt them automatically, because the finalized implementation is Java-based.
+
+## Controlled attack lab
+
+The localhost-only proxy can observe ciphertext metadata, tamper with one encrypted message, replay one message, or alter one signed key announcement. Follow the setup and expected observations in [docs/attack-lab.md](docs/attack-lab.md). It only accepts loopback targets and binds to loopback itself.
 
 ## Research work to complete
 
