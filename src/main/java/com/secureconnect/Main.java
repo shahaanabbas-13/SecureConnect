@@ -106,7 +106,7 @@ public final class Main {
         System.out.println("Start relay:  java -cp target/classes com.secureconnect.Main server [port]");
         System.out.println("Start client: java -cp target/classes com.secureconnect.Main client <username> <peer> [host] [port]");
         System.out.println("Generate identity: java -cp target/classes com.secureconnect.Main identity-keygen <username>");
-        System.out.println("Attack proxy: java -cp target/classes com.secureconnect.Main attack-proxy <eavesdrop|tamper|replay|key-substitution> [listenPort] [targetHost] [targetPort]");
+        System.out.println("Attack lab: java -cp target/classes com.secureconnect.Main attack-proxy <eavesdrop|tamper|replay|key-substitution|masquerade|dos> [listenPort] [targetHost] [targetPort]");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");

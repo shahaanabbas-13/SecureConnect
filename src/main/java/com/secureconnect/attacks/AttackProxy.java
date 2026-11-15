@@ -10,8 +10,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Local-only attacker proxy for controlled demonstrations against SecureConnect. */
@@ -23,6 +27,7 @@ public final class AttackProxy {
     private final AtomicBoolean attackApplied = new AtomicBoolean();
     private final AtomicBoolean replaySent = new AtomicBoolean();
     private final ExecutorService workers = Executors.newCachedThreadPool();
+    private static final int DOS_BURST_SIZE = 20;
 
     public AttackProxy(Mode mode, int listenPort, String targetHost, int targetPort) throws IOException {
         this.mode = mode;
@@ -38,6 +43,11 @@ public final class AttackProxy {
     }
 
     public void start() throws IOException {
+        if (mode == Mode.DOS) {
+            runDosBurst();
+            workers.shutdownNow();
+            return;
+        }
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
         try (ServerSocket listener = new ServerSocket(listenPort, 50, loopback)) {
             System.out.println("Attack proxy mode: " + mode.commandName);
@@ -63,7 +73,10 @@ public final class AttackProxy {
                      server.getInputStream(), StandardCharsets.UTF_8));
              BufferedWriter clientOutput = new BufferedWriter(new OutputStreamWriter(
                      client.getOutputStream(), StandardCharsets.UTF_8))) {
-            Thread serverToClient = new Thread(() -> forward(serverInput, clientOutput),
+            AtomicReference<String> clientNameRef = new AtomicReference<>("unknown client");
+            AtomicBoolean masqueradeJoin = new AtomicBoolean();
+            Thread serverToClient = new Thread(() -> forward(serverInput, clientOutput,
+                    clientNameRef, masqueradeJoin),
                     "secureconnect-attack-downstream");
             serverToClient.setDaemon(true);
             serverToClient.start();
@@ -73,6 +86,12 @@ public final class AttackProxy {
             while ((line = clientInput.readLine()) != null) {
                 if (line.startsWith("JOIN\t")) {
                     clientName = line.substring("JOIN\t".length());
+                    clientNameRef.set(clientName);
+                    if (mode == Mode.MASQUERADE && "Mallory".equals(clientName)) {
+                        line = "JOIN\tAlice";
+                        masqueradeJoin.set(true);
+                        System.out.println("[MASQUERADE] Changed Mallory's claimed login name to Alice.");
+                    }
                 }
                 String transformed = transform(line, clientName);
                 serverOutput.write(transformed);
@@ -173,10 +192,16 @@ public final class AttackProxy {
         return String.join("\t", fields);
     }
 
-    private static void forward(BufferedReader input, BufferedWriter output) {
+    private void forward(BufferedReader input, BufferedWriter output,
+                         AtomicReference<String> clientName, AtomicBoolean masqueradeJoin) {
         try {
             String line;
             while ((line = input.readLine()) != null) {
+                if (mode == Mode.MASQUERADE && masqueradeJoin.get()
+                        && "WELCOME\tAlice".equals(line)) {
+                    line = "WELCOME\t" + clientName.get();
+                    System.out.println("[MASQUERADE] Rewrote the relay greeting so the attacker client continues.");
+                }
                 output.write(line);
                 output.newLine();
                 output.flush();
@@ -184,6 +209,58 @@ public final class AttackProxy {
         } catch (IOException ignored) {
             // The client may have closed the connection first.
         }
+    }
+
+    private void runDosBurst() throws IOException {
+        System.out.println("[DOS] Sending a bounded burst of " + DOS_BURST_SIZE
+                + " concurrent localhost connections to " + targetHost + ":" + targetPort + ".");
+        System.out.println("This relay has no connection rate limit yet; this is a small baseline only.");
+        CountDownLatch connected = new CountDownLatch(DOS_BURST_SIZE);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger accepted = new AtomicInteger();
+        Future<?>[] attempts = new Future<?>[DOS_BURST_SIZE];
+        for (int index = 0; index < DOS_BURST_SIZE; index++) {
+            String username = "LoadProbe" + index;
+            attempts[index] = workers.submit(() -> {
+                try (Socket socket = new Socket(targetHost, targetPort);
+                     BufferedWriter output = new BufferedWriter(new OutputStreamWriter(
+                             socket.getOutputStream(), StandardCharsets.UTF_8));
+                     BufferedReader input = new BufferedReader(new InputStreamReader(
+                             socket.getInputStream(), StandardCharsets.UTF_8))) {
+                    output.write("JOIN\t" + username);
+                    output.newLine();
+                    output.flush();
+                    String response = input.readLine();
+                    if (("WELCOME\t" + username).equals(response)) {
+                        accepted.incrementAndGet();
+                    }
+                    connected.countDown();
+                    release.await();
+                } catch (IOException exception) {
+                    connected.countDown();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    connected.countDown();
+                }
+            });
+        }
+        try {
+            connected.await();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        } finally {
+            release.countDown();
+        }
+        for (Future<?> attempt : attempts) {
+            try {
+                attempt.get();
+            } catch (Exception ignored) {
+                // Report completed accepts below; this is a bounded demonstration.
+            }
+        }
+        System.out.println("[DOS] Relay accepted " + accepted.get() + " of " + DOS_BURST_SIZE
+                + " simulated connections.");
+        System.out.println("No crash or resource exhaustion was attempted.");
     }
 
     private static void validatePort(int port) {
@@ -196,7 +273,9 @@ public final class AttackProxy {
         EAVESDROP("eavesdrop"),
         TAMPER("tamper"),
         REPLAY("replay"),
-        KEY_SUBSTITUTION("key-substitution");
+        KEY_SUBSTITUTION("key-substitution"),
+        MASQUERADE("masquerade"),
+        DOS("dos");
 
         private final String commandName;
 
@@ -210,7 +289,7 @@ public final class AttackProxy {
                     return mode;
                 }
             }
-            throw new IllegalArgumentException("mode must be eavesdrop, tamper, replay, or key-substitution");
+            throw new IllegalArgumentException("mode must be eavesdrop, tamper, replay, key-substitution, masquerade, or dos");
         }
     }
 }
