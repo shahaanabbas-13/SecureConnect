@@ -29,13 +29,15 @@ public final class AesGcmCrypto {
     }
 
     /** Encrypts plaintext and authenticates the supplied routing context. */
-    public String encrypt(String plaintext, String sender, String recipient) {
+    public String encrypt(String plaintext, String sender, String recipient,
+                          long sequence, long keyVersion) {
+        validateMessagePosition(sequence, keyVersion);
         byte[] nonce = new byte[NONCE_LENGTH_BYTES];
         secureRandom.nextBytes(nonce);
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_LENGTH_BITS, nonce));
-            cipher.updateAAD(context(sender, recipient));
+            cipher.updateAAD(context(sender, recipient, sequence, keyVersion));
             byte[] ciphertextAndTag = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
             byte[] envelope = ByteBuffer.allocate(nonce.length + ciphertextAndTag.length)
                     .put(nonce)
@@ -48,7 +50,9 @@ public final class AesGcmCrypto {
     }
 
     /** Verifies the GCM tag before returning plaintext. */
-    public String decrypt(String encodedEnvelope, String sender, String recipient) {
+    public String decrypt(String encodedEnvelope, String sender, String recipient,
+                          long sequence, long keyVersion) {
+        validateMessagePosition(sequence, keyVersion);
         if (encodedEnvelope == null || !encodedEnvelope.startsWith(VERSION_PREFIX)) {
             throw new IllegalArgumentException("Unsupported or malformed encrypted message");
         }
@@ -71,7 +75,7 @@ public final class AesGcmCrypto {
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_LENGTH_BITS, nonce));
-            cipher.updateAAD(context(sender, recipient));
+            cipher.updateAAD(context(sender, recipient, sequence, keyVersion));
             return new String(cipher.doFinal(ciphertextAndTag), StandardCharsets.UTF_8);
         } catch (AEADBadTagException exception) {
             throw new SecurityException("Message authentication failed; message rejected", exception);
@@ -80,8 +84,15 @@ public final class AesGcmCrypto {
         }
     }
 
-    private static byte[] context(String sender, String recipient) {
-        return ("SecureConnect-v1\u0000" + sender + "\u0000" + recipient)
+    private static byte[] context(String sender, String recipient, long sequence, long keyVersion) {
+        return ("SecureConnect-message-v2\u0000" + sender + "\u0000" + recipient
+                + "\u0000" + sequence + "\u0000" + keyVersion)
                 .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void validateMessagePosition(long sequence, long keyVersion) {
+        if (sequence < 1 || keyVersion < 0) {
+            throw new IllegalArgumentException("sequence must be positive and key version nonnegative");
+        }
     }
 }

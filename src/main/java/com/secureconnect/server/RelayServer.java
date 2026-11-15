@@ -128,9 +128,9 @@ public final class RelayServer {
     }
 
     private void handleMessage(ClientConnection sender, String line) throws IOException {
-        String[] fields = line.split("\\t", 3);
-        if (fields.length != 3 || !"SEND".equals(fields[0])) {
-            sender.send("ERROR\tExpected SEND, recipient, and message.");
+        String[] fields = line.split("\\t", 5);
+        if (fields.length != 5 || !"SEND".equals(fields[0])) {
+            sender.send("ERROR\tExpected SEND, recipient, sequence, key version, and envelope.");
             return;
         }
 
@@ -140,15 +140,28 @@ public final class RelayServer {
             return;
         }
 
-        final String message;
+        final long sequence;
+        final long keyVersion;
         try {
-            message = new String(Base64.getDecoder().decode(fields[2]), StandardCharsets.UTF_8);
-        } catch (IllegalArgumentException exception) {
-            sender.send("ERROR\tMessage encoding was invalid.");
+            sequence = Long.parseLong(fields[2]);
+            keyVersion = Long.parseLong(fields[3]);
+            if (sequence < 1 || keyVersion < 0) {
+                throw new NumberFormatException("negative message position");
+            }
+        } catch (NumberFormatException exception) {
+            sender.send("ERROR\tMessage sequence or key version was invalid.");
             return;
         }
-        if (message.isBlank()) {
-            sender.send("ERROR\tMessage cannot be empty.");
+
+        final String envelope;
+        try {
+            envelope = new String(Base64.getDecoder().decode(fields[4]), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            sender.send("ERROR\tMessage envelope encoding was invalid.");
+            return;
+        }
+        if (envelope.isBlank()) {
+            sender.send("ERROR\tMessage envelope cannot be empty.");
             return;
         }
 
@@ -158,10 +171,11 @@ public final class RelayServer {
             return;
         }
 
-        String encodedMessage = Base64.getEncoder().encodeToString(
-                message.getBytes(StandardCharsets.UTF_8));
+        String encodedEnvelope = Base64.getEncoder().encodeToString(
+                envelope.getBytes(StandardCharsets.UTF_8));
         try {
-            recipient.send("DELIVER\t" + sender.username + "\t" + encodedMessage);
+            recipient.send("DELIVER\t" + sender.username + "\t" + sequence + "\t"
+                    + keyVersion + "\t" + encodedEnvelope);
             sender.send("SENT\t" + recipientName);
         } catch (IOException exception) {
             sender.send("ERROR\tCould not deliver message to " + recipientName + ".");

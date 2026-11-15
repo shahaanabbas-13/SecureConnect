@@ -1,6 +1,6 @@
 package com.secureconnect.client;
 
-import com.secureconnect.crypto.AesGcmCrypto;
+import com.secureconnect.crypto.MessageKeySchedule;
 import com.secureconnect.keymanagement.SessionKeyExchange;
 
 import java.io.BufferedReader;
@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.Base64;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Console chat client with signed ephemeral X25519 key establishment. */
 public final class ChatClient {
@@ -22,7 +23,10 @@ public final class ChatClient {
     private final String peerUsername;
     private final PublicKey trustedPeerSigningKey;
     private final SessionKeyExchange.LocalSession localSession;
-    private volatile AesGcmCrypto crypto;
+    private volatile MessageKeySchedule keySchedule;
+    private final AtomicLong nextOutgoingSequence = new AtomicLong(1);
+    private long nextIncomingSequence = 1;
+    private long lastAnnouncedOutgoingVersion = -1;
 
     public ChatClient(String host, int port, String username, String peerUsername,
                       PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey) {
@@ -105,18 +109,26 @@ public final class ChatClient {
             System.out.println("Message cannot be empty.");
             return;
         }
-        AesGcmCrypto activeCrypto = crypto;
-        if (activeCrypto == null) {
+        MessageKeySchedule activeSchedule = keySchedule;
+        if (activeSchedule == null) {
             System.out.println("Secure session is not ready; message was not sent.");
             return;
         }
 
-        String encryptedMessage = activeCrypto.encrypt(message, username, peerUsername);
+        long sequence = nextOutgoingSequence.get();
+        long keyVersion = activeSchedule.keyVersionFor(sequence);
+        String encryptedMessage = activeSchedule.encrypt(message, sequence);
         String encodedEnvelope = Base64.getEncoder().encodeToString(
                 encryptedMessage.getBytes(StandardCharsets.UTF_8));
-        serverOutput.write("SEND\t" + peerUsername + "\t" + encodedEnvelope);
+        serverOutput.write("SEND\t" + peerUsername + "\t" + sequence + "\t"
+                + keyVersion + "\t" + encodedEnvelope);
         serverOutput.newLine();
         serverOutput.flush();
+        nextOutgoingSequence.incrementAndGet();
+        if (keyVersion != lastAnnouncedOutgoingVersion) {
+            lastAnnouncedOutgoingVersion = keyVersion;
+            System.out.println("Message key rotated to version " + keyVersion + ".");
+        }
     }
 
     private void receiveMessages(BufferedReader serverInput) {
@@ -128,7 +140,14 @@ public final class ChatClient {
                     case "PEERKEY" -> handlePeerKey(fields);
                     case "PEERLEFT" -> {
                         if (fields.length >= 2 && peerUsername.equals(fields[1])) {
-                            crypto = null;
+                            MessageKeySchedule previous = keySchedule;
+                            keySchedule = null;
+                            if (previous != null) {
+                                previous.clear();
+                            }
+                            nextOutgoingSequence.set(1);
+                            nextIncomingSequence = 1;
+                            lastAnnouncedOutgoingVersion = -1;
                             System.out.println("\n[SECURITY] Peer disconnected; session key cleared.");
                         }
                     }
@@ -157,29 +176,48 @@ public final class ChatClient {
             byte[] sessionKey = SessionKeyExchange.deriveSessionKey(
                     username, peerUsername, localSession, fields[2], fields[3], fields[4],
                     trustedPeerSigningKey);
-            crypto = new AesGcmCrypto(sessionKey);
+            MessageKeySchedule previous = keySchedule;
+            if (previous != null) {
+                previous.clear();
+            }
+            keySchedule = new MessageKeySchedule(sessionKey, username, peerUsername);
             java.util.Arrays.fill(sessionKey, (byte) 0);
+            nextOutgoingSequence.set(1);
+            nextIncomingSequence = 1;
+            lastAnnouncedOutgoingVersion = -1;
             System.out.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
         } catch (IllegalArgumentException | SecurityException exception) {
-            crypto = null;
+            MessageKeySchedule previous = keySchedule;
+            keySchedule = null;
+            if (previous != null) {
+                previous.clear();
+            }
             System.out.println("\n[SECURITY] Peer key rejected: " + exception.getMessage());
         }
     }
 
     private void handleDelivery(String[] fields) {
-        if (fields.length != 3 || !peerUsername.equals(fields[1])) {
+        if (fields.length != 5 || !peerUsername.equals(fields[1])) {
             System.out.println("\n[SECURITY] Ignored message from an unexpected peer.");
             return;
         }
-        AesGcmCrypto activeCrypto = crypto;
-        if (activeCrypto == null) {
+        MessageKeySchedule activeSchedule = keySchedule;
+        if (activeSchedule == null) {
             System.out.println("\n[SECURITY] Message rejected; no authenticated session is active.");
             return;
         }
         try {
-            String encryptedMessage = new String(Base64.getDecoder().decode(fields[2]),
+            long sequence = Long.parseLong(fields[2]);
+            long keyVersion = Long.parseLong(fields[3]);
+            if (sequence != nextIncomingSequence) {
+                System.out.println("\n[SECURITY] Replayed or out-of-order message rejected (expected sequence "
+                        + nextIncomingSequence + ", received " + sequence + ").");
+                return;
+            }
+            String encryptedMessage = new String(Base64.getDecoder().decode(fields[4]),
                     StandardCharsets.UTF_8);
-            String message = activeCrypto.decrypt(encryptedMessage, fields[1], username);
+            String message = activeSchedule.decrypt(encryptedMessage, fields[1], sequence, keyVersion);
+            nextIncomingSequence++;
             System.out.println("\n[" + fields[1] + "]: " + message);
         } catch (IllegalArgumentException | SecurityException exception) {
             System.out.println("\n[SECURITY] Message rejected: " + exception.getMessage());

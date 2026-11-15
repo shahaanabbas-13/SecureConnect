@@ -96,6 +96,22 @@ public final class SessionKeyExchange {
         }
     }
 
+    public static byte[] deriveMessageKey(byte[] sessionRootKey, String firstUsername,
+                                          String secondUsername, long keyVersion) {
+        if (sessionRootKey == null || sessionRootKey.length != 32 || keyVersion < 0) {
+            throw new IllegalArgumentException("session root must be 32 bytes and key version nonnegative");
+        }
+        String first = firstUsername.compareTo(secondUsername) < 0 ? firstUsername : secondUsername;
+        String second = firstUsername.compareTo(secondUsername) < 0 ? secondUsername : firstUsername;
+        byte[] info = ("SecureConnect AES-GCM epoch v1\u0000" + first + "\u0000" + second
+                + "\u0000" + keyVersion).getBytes(StandardCharsets.UTF_8);
+        try {
+            return hkdfSha256(sessionRootKey, new byte[32], info, 32);
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalStateException("could not derive a message key", exception);
+        }
+    }
+
     private static byte[] canonical(String username, String sessionId64, String ephemeralPublic64) {
         return (VERSION + "\n" + username + "\n" + sessionId64 + "\n" + ephemeralPublic64)
                 .getBytes(StandardCharsets.UTF_8);

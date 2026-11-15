@@ -72,7 +72,7 @@ java -cp target/classes com.secureconnect.Main client Alice Bob
 
 After each client reports an authenticated encrypted session, Alice can type `/to Bob Hello Bob!`. Bob sees the decrypted message; Alice sees a delivery confirmation. Type `/quit` in each client, then press Ctrl+C in the relay terminal to stop the server. Usernames can contain 1–32 letters, digits, underscores, or hyphens. The relay defaults to port 5050 and binds only to `127.0.0.1`.
 
-Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. The `.gitignore` excludes `keys\`; do not commit or share private files. This local storage is only for the educational prototype. Verify public identity keys out of band; an unverified key copied through the relay allows key substitution. Replay handling, durable identity storage, TLS, account authentication, and production-grade session lifecycle are still future work. Use localhost and dummy messages only.
+Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. The `.gitignore` excludes `keys\`; do not commit or share private files. This local storage is only for the educational prototype. Verify public identity keys out of band; an unverified key copied through the relay allows key substitution. Replay sequence state is in memory and resets for a new session. Epoch keys are deterministically derived from the session root, which remains in memory so it can derive later epochs; this is key refresh for demonstration, not a forward-secure ratchet. Durable identity storage, TLS, account authentication, and a production session lifecycle are still future work. Use localhost and dummy messages only.
 
 ## Planned implementation sequence
 
@@ -80,7 +80,7 @@ Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. Th
 2. **Plaintext messaging baseline (complete):** local two-user messaging through a Java socket relay.
 3. **AES-256-GCM (complete):** encrypt and decrypt on clients, carry a nonce, ciphertext, and tag, bind sender/recipient routing context as associated data, and reject authentication failures.
 4. **Authenticated key establishment (prototype complete):** signed ephemeral X25519 public keys, pinned Ed25519 identities, and HKDF-SHA-256 session keys.
-5. **Replay and key lifecycle:** add authenticated message identifiers/sequence state, duplicate rejection, and controlled session-key rotation.
+5. **Replay and key lifecycle (prototype complete):** authenticated per-direction sequence numbers reject duplicate/out-of-order messages; HKDF derives a new AES key epoch every 10 messages.
 6. **Controlled attack experiments:** demonstrate ciphertext observation, tampering, replay, impersonation/key substitution, and rate limiting only against the local test system.
 7. **Evaluation and reporting:** repeat trials across 1 KB, 10 KB, 100 KB, and 1 MB payloads; report latency, throughput, delivery and rejection outcomes, and variability. Keep raw CSV, graph source, and evidence reproducible.
 
