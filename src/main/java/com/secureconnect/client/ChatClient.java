@@ -2,13 +2,14 @@ package com.secureconnect.client;
 
 import com.secureconnect.crypto.MessageKeySchedule;
 import com.secureconnect.keymanagement.SessionKeyExchange;
-
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -21,6 +22,8 @@ public final class ChatClient {
     private final int port;
     private final String username;
     private final String peerUsername;
+    private final SSLContext tlsContext;
+    private final ClientConsole console;
     private final PublicKey trustedPeerSigningKey;
     private final SessionKeyExchange.LocalSession localSession;
     private volatile MessageKeySchedule keySchedule;
@@ -29,7 +32,8 @@ public final class ChatClient {
     private long lastAnnouncedOutgoingVersion = -1;
 
     public ChatClient(String host, int port, String username, String peerUsername,
-                      PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey) {
+                      PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey,
+                      SSLContext tlsContext, ClientConsole console) {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("host cannot be empty");
         }
@@ -48,54 +52,97 @@ public final class ChatClient {
         this.username = username;
         this.peerUsername = peerUsername;
         this.trustedPeerSigningKey = trustedPeerSigningKey;
+        this.tlsContext = tlsContext;
+        this.console = console;
         this.localSession = SessionKeyExchange.start(username, identityPrivateKey);
     }
 
     public void run() throws IOException {
-        try (Socket socket = new Socket(host, port);
+        String action = console.readLine("Account action (register/login): ");
+        if (action == null || !(action.equalsIgnoreCase("register") || action.equalsIgnoreCase("login"))) {
+            System.out.println("Account action must be register or login.");
+            return;
+        }
+        char[] password = console.readPassword("Password (minimum 12 characters): ");
+        if (password == null) {
+            System.out.println("No password was provided.");
+            return;
+        }
+        if (action.equalsIgnoreCase("register")) {
+            char[] confirmation = console.readPassword("Confirm password: ");
+            if (!java.util.Arrays.equals(password, confirmation)) {
+                java.util.Arrays.fill(password, '\0');
+                if (confirmation != null) java.util.Arrays.fill(confirmation, '\0');
+                System.out.println("Passwords did not match.");
+                return;
+            }
+            if (confirmation != null) java.util.Arrays.fill(confirmation, '\0');
+        }
+        String encodedPassword = encodePassword(password);
+
+        SSLSocket socket = (SSLSocket) tlsContext.getSocketFactory().createSocket(host, port);
+        SSLParameters sslParameters = socket.getSSLParameters();
+        sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
+        socket.setSSLParameters(sslParameters);
+        try (socket;
              BufferedReader serverInput = new BufferedReader(new InputStreamReader(
                      socket.getInputStream(), StandardCharsets.UTF_8));
              BufferedWriter serverOutput = new BufferedWriter(new OutputStreamWriter(
                      socket.getOutputStream(), StandardCharsets.UTF_8))) {
-            serverOutput.write("JOIN\t" + username);
+            socket.startHandshake();
+            serverOutput.write("AUTH\t" + action.toUpperCase(java.util.Locale.ROOT)
+                    + "\t" + username + "\t" + encodedPassword);
             serverOutput.newLine();
             serverOutput.flush();
 
             String welcome = serverInput.readLine();
-            if (welcome == null || welcome.startsWith("ERROR\t")) {
-                throw new IOException(welcome == null ? "relay closed the connection" : welcome.substring(6));
+            if (welcome == null || welcome.startsWith("AUTH_ERROR\t")) {
+                System.out.println(welcome == null ? "Relay closed the TLS connection."
+                        : welcome.substring("AUTH_ERROR\t".length()));
+                return;
             }
-            if (!welcome.equals("WELCOME\t" + username)) {
-                throw new IOException("unexpected response from relay");
+            if (!welcome.equals("AUTH_OK\t" + username)) {
+                throw new IOException("unexpected TLS relay authentication response");
             }
 
             serverOutput.write(localSession.announcement());
             serverOutput.newLine();
             serverOutput.flush();
 
-            System.out.println("Connected to local relay as " + username + ".");
+            System.out.println("Authenticated over TLS as " + username + ".");
+            System.out.println("This account session is bound to this TLS connection.");
             System.out.println("Waiting for " + peerUsername + " to establish an authenticated session.");
-            System.out.println("Send with: /to " + peerUsername + " <message>    Exit with: /quit");
+            System.out.println("Send with: /to " + peerUsername + " <message>    Exit with: /logout");
 
             Thread receiver = new Thread(() -> receiveMessages(serverInput), "secureconnect-receiver");
             receiver.setDaemon(true);
             receiver.start();
 
-            try (BufferedReader console = new BufferedReader(new InputStreamReader(
-                    System.in, StandardCharsets.UTF_8))) {
-                String input;
-                while ((input = console.readLine()) != null) {
-                    if ("/quit".equalsIgnoreCase(input.trim())) {
-                        serverOutput.write("QUIT");
+            String input;
+            while ((input = console.readChatLine()) != null) {
+                    if ("/logout".equalsIgnoreCase(input.trim()) || "/quit".equalsIgnoreCase(input.trim())) {
+                        serverOutput.write("LOGOUT");
                         serverOutput.newLine();
                         serverOutput.flush();
                         break;
                     }
                     sendMessage(serverOutput, input);
-                }
             }
         }
         System.out.println("Disconnected.");
+    }
+
+    private static String encodePassword(char[] password) {
+        java.nio.ByteBuffer encoded = StandardCharsets.UTF_8.encode(java.nio.CharBuffer.wrap(password));
+        byte[] bytes = new byte[encoded.remaining()];
+        encoded.get(bytes);
+        java.util.Arrays.fill(password, '\0');
+        try {
+            return Base64.getEncoder().encodeToString(bytes);
+        } finally {
+            java.util.Arrays.fill(bytes, (byte) 0);
+            if (encoded.hasArray()) java.util.Arrays.fill(encoded.array(), (byte) 0);
+        }
     }
 
     private void sendMessage(BufferedWriter serverOutput, String input) throws IOException {
@@ -155,6 +202,9 @@ public final class ChatClient {
                             System.out.println("\n[SECURITY] Peer disconnected; session key cleared.");
                         }
                     }
+                    case "SESSION_EXPIRED" -> System.out.println("\n[SESSION] "
+                            + (fields.length > 1 ? fields[1] : "Session expired."));
+                    case "LOGOUT_OK" -> System.out.println("\nLogged out.");
                     case "DELIVER" -> handleDelivery(fields);
                     case "SENT" -> {
                         if (fields.length >= 2) {
@@ -167,7 +217,7 @@ public final class ChatClient {
                 }
             }
         } catch (IOException exception) {
-            System.out.println("Relay connection ended: " + exception.getMessage());
+            System.out.println("TLS relay connection ended: " + exception.getMessage());
         }
     }
 

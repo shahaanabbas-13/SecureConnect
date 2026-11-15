@@ -17,6 +17,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLSocket;
 
 /** Local-only attacker proxy for controlled demonstrations against SecureConnect. */
 public final class AttackProxy {
@@ -24,12 +28,15 @@ public final class AttackProxy {
     private final int listenPort;
     private final String targetHost;
     private final int targetPort;
+    private final SSLContext proxyTlsContext;
+    private final SSLContext upstreamTlsContext;
     private final AtomicBoolean attackApplied = new AtomicBoolean();
     private final AtomicBoolean replaySent = new AtomicBoolean();
     private final ExecutorService workers = Executors.newCachedThreadPool();
     private static final int DOS_BURST_SIZE = 20;
 
-    public AttackProxy(Mode mode, int listenPort, String targetHost, int targetPort) throws IOException {
+    public AttackProxy(Mode mode, int listenPort, String targetHost, int targetPort,
+                       SSLContext proxyTlsContext, SSLContext upstreamTlsContext) throws IOException {
         this.mode = mode;
         validatePort(listenPort);
         validatePort(targetPort);
@@ -40,6 +47,8 @@ public final class AttackProxy {
         this.listenPort = listenPort;
         this.targetHost = target.getHostAddress();
         this.targetPort = targetPort;
+        this.proxyTlsContext = proxyTlsContext;
+        this.upstreamTlsContext = upstreamTlsContext;
     }
 
     public void start() throws IOException {
@@ -49,13 +58,17 @@ public final class AttackProxy {
             return;
         }
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
-        try (ServerSocket listener = new ServerSocket(listenPort, 50, loopback)) {
+        SSLServerSocket tlsListener = (SSLServerSocket) proxyTlsContext.getServerSocketFactory()
+                .createServerSocket(listenPort, 50, loopback);
+        tlsListener.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
+        try (SSLServerSocket listener = tlsListener) {
             System.out.println("Attack proxy mode: " + mode.commandName);
             System.out.println("Clients connect to " + loopback.getHostAddress() + ":" + listenPort
                     + "; proxy forwards to " + targetHost + ":" + targetPort);
             System.out.println("Controlled localhost demonstration only. Press Ctrl+C to stop.");
             while (!listener.isClosed()) {
-                Socket client = listener.accept();
+                SSLSocket client = (SSLSocket) listener.accept();
+                client.setUseClientMode(false);
                 workers.execute(() -> bridge(client));
             }
         } finally {
@@ -63,8 +76,9 @@ public final class AttackProxy {
         }
     }
 
-    private void bridge(Socket client) {
-        try (client; Socket server = new Socket(targetHost, targetPort);
+    private void bridge(SSLSocket client) {
+        try (client; SSLSocket server = (SSLSocket) upstreamTlsContext.getSocketFactory()
+                .createSocket(targetHost, targetPort);
              BufferedReader clientInput = new BufferedReader(new InputStreamReader(
                      client.getInputStream(), StandardCharsets.UTF_8));
              BufferedWriter serverOutput = new BufferedWriter(new OutputStreamWriter(
@@ -73,6 +87,11 @@ public final class AttackProxy {
                      server.getInputStream(), StandardCharsets.UTF_8));
              BufferedWriter clientOutput = new BufferedWriter(new OutputStreamWriter(
                      client.getOutputStream(), StandardCharsets.UTF_8))) {
+            SSLParameters parameters = server.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            server.setSSLParameters(parameters);
+            server.startHandshake();
+            client.startHandshake();
             AtomicReference<String> clientNameRef = new AtomicReference<>("unknown client");
             AtomicBoolean masqueradeJoin = new AtomicBoolean();
             Thread serverToClient = new Thread(() -> forward(serverInput, clientOutput,
@@ -84,13 +103,19 @@ public final class AttackProxy {
             String clientName = "unknown client";
             String line;
             while ((line = clientInput.readLine()) != null) {
-                if (line.startsWith("JOIN\t")) {
-                    clientName = line.substring("JOIN\t".length());
+                if (line.startsWith("AUTH\t")) {
+                    String[] authFields = line.split("\\t", 4);
+                    if (authFields.length == 4) clientName = authFields[2];
                     clientNameRef.set(clientName);
                     if (mode == Mode.MASQUERADE && "Mallory".equals(clientName)) {
-                        line = "JOIN\tAlice";
-                        masqueradeJoin.set(true);
-                        System.out.println("[MASQUERADE] Changed Mallory's claimed login name to Alice.");
+                        if ("LOGIN".equals(authFields[1])) {
+                            authFields[2] = "Alice";
+                            line = String.join("\t", authFields);
+                            masqueradeJoin.set(true);
+                            System.out.println("[MASQUERADE] Changed Mallory's login name to Alice; the server checks Alice's password.");
+                        } else {
+                            System.out.println("[MASQUERADE] Only a login attempt is rewritten; account registration is not altered.");
+                        }
                     }
                 }
                 String transformed = transform(line, clientName);
@@ -198,9 +223,8 @@ public final class AttackProxy {
             String line;
             while ((line = input.readLine()) != null) {
                 if (mode == Mode.MASQUERADE && masqueradeJoin.get()
-                        && "WELCOME\tAlice".equals(line)) {
-                    line = "WELCOME\t" + clientName.get();
-                    System.out.println("[MASQUERADE] Rewrote the relay greeting so the attacker client continues.");
+                        && line.startsWith("AUTH_ERROR\t")) {
+                    System.out.println("[MASQUERADE] Relay rejected the login because Mallory did not know Alice's password.");
                 }
                 output.write(line);
                 output.newLine();
@@ -222,20 +246,28 @@ public final class AttackProxy {
         for (int index = 0; index < DOS_BURST_SIZE; index++) {
             String username = "LoadProbe" + index;
             attempts[index] = workers.submit(() -> {
-                try (Socket socket = new Socket(targetHost, targetPort);
+                try (SSLSocket socket = (SSLSocket) upstreamTlsContext.getSocketFactory()
+                        .createSocket(targetHost, targetPort);
                      BufferedWriter output = new BufferedWriter(new OutputStreamWriter(
                              socket.getOutputStream(), StandardCharsets.UTF_8));
                      BufferedReader input = new BufferedReader(new InputStreamReader(
                              socket.getInputStream(), StandardCharsets.UTF_8))) {
-                    output.write("JOIN\t" + username);
+                    SSLParameters parameters = socket.getSSLParameters();
+                    parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                    socket.setSSLParameters(parameters);
+                    socket.startHandshake();
+                    output.write("INVALID_AUTH\t" + username);
                     output.newLine();
                     output.flush();
                     String response = input.readLine();
-                    if (("WELCOME\t" + username).equals(response)) {
+                    if (response != null && response.startsWith("AUTH_ERROR\t")) {
                         accepted.incrementAndGet();
                     }
                     connected.countDown();
                     release.await();
+                    output.write("QUIT");
+                    output.newLine();
+                    output.flush();
                 } catch (IOException exception) {
                     connected.countDown();
                 } catch (InterruptedException exception) {
@@ -258,8 +290,8 @@ public final class AttackProxy {
                 // Report completed accepts below; this is a bounded demonstration.
             }
         }
-        System.out.println("[DOS] Relay accepted " + accepted.get() + " of " + DOS_BURST_SIZE
-                + " simulated connections.");
+        System.out.println("[DOS] TLS relay completed " + accepted.get() + " of " + DOS_BURST_SIZE
+                + " unauthenticated handshake/request attempts.");
         System.out.println("No crash or resource exhaustion was attempted.");
     }
 

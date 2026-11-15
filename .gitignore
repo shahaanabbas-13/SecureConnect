@@ -18,6 +18,11 @@ hs_err_pid*
 *.jks
 *.keystore
 keys/
+certs/*.p12
+certs/*.jks
+certs/*.key
+data/accounts.properties
+data/accounts.properties.tmp
 
 # OS files
 Thumbs.db

@@ -1,9 +1,11 @@
 package com.secureconnect;
 
 import com.secureconnect.client.ChatClient;
+import com.secureconnect.client.ClientConsole;
 import com.secureconnect.attacks.AttackProxy;
 import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
+import com.secureconnect.security.TlsContexts;
 
 import java.io.IOException;
 
@@ -42,7 +44,7 @@ public final class Main {
             throw new IllegalArgumentException("server accepts only an optional port");
         }
         int port = args.length == 2 ? parsePort(args[1]) : DEFAULT_PORT;
-        new RelayServer(port).start();
+        new RelayServer(port, TlsContexts.serverContextFromEnvironment()).start();
     }
 
     private static void runClient(String[] args) throws IOException {
@@ -59,7 +61,8 @@ public final class Main {
         }
         new ChatClient(host, port, username, peerUsername,
                 IdentityKeys.loadPrivate(username),
-                IdentityKeys.decodePinnedPublicKey(encodedTrustedKey)).run();
+                IdentityKeys.decodePinnedPublicKey(encodedTrustedKey),
+                TlsContexts.clientContextFromEnvironment(), new ClientConsole()).run();
     }
 
     private static void runIdentityKeygen(String[] args) throws IOException {
@@ -84,7 +87,9 @@ public final class Main {
         int listenPort = args.length >= 3 ? parsePort(args[2]) : 5051;
         String targetHost = args.length >= 4 ? args[3] : "127.0.0.1";
         int targetPort = args.length == 5 ? parsePort(args[4]) : DEFAULT_PORT;
-        new AttackProxy(mode, listenPort, targetHost, targetPort).start();
+        new AttackProxy(mode, listenPort, targetHost, targetPort,
+                TlsContexts.serverContextFromEnvironment(),
+                TlsContexts.clientContextFromEnvironment()).start();
     }
 
     private static int parsePort(String value) {

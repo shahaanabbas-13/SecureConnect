@@ -1,65 +1,90 @@
 package com.secureconnect.server;
 
+import com.secureconnect.security.AccountService;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLServerSocketFactory;
+import javax.net.ssl.SSLSocket;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-/** Local-only ciphertext relay for the educational messaging prototype. */
+/** TLS-protected local relay with account authentication and connection-bound sessions. */
 public final class RelayServer {
+    private static final long MAX_SESSION_AGE_MILLIS = TimeUnit.MINUTES.toMillis(30);
+    private static final long IDLE_SESSION_MILLIS = TimeUnit.MINUTES.toMillis(10);
     private final int port;
+    private final SSLContext tlsContext;
+    private final AccountService accounts;
     private final Map<String, ClientConnection> clients = new ConcurrentHashMap<>();
     private final Map<String, String> keyAnnouncements = new ConcurrentHashMap<>();
     private final ExecutorService clientWorkers = Executors.newCachedThreadPool();
+    private final ScheduledExecutorService sessionSweeper = Executors.newSingleThreadScheduledExecutor();
 
-    public RelayServer(int port) {
+    public RelayServer(int port, SSLContext tlsContext) throws IOException {
         if (port < 1 || port > 65535) {
             throw new IllegalArgumentException("port must be between 1 and 65535");
         }
         this.port = port;
+        this.tlsContext = tlsContext;
+        this.accounts = new AccountService();
     }
 
     public void start() throws IOException {
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
-        try (ServerSocket serverSocket = new ServerSocket(port, 50, loopback)) {
-            System.out.println("SecureConnect relay listening on " + loopback.getHostAddress()
+        SSLServerSocketFactory factory = tlsContext.getServerSocketFactory();
+        try (SSLServerSocket serverSocket = (SSLServerSocket) factory.createServerSocket(port, 50, loopback)) {
+            serverSocket.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
+            sessionSweeper.scheduleAtFixedRate(this::expireSessions, 10, 10, TimeUnit.SECONDS);
+            System.out.println("SecureConnect TLS relay listening on " + loopback.getHostAddress()
                     + ":" + port);
-            System.out.println("Local prototype without TLS or account authentication; do not expose it to a network.");
+            System.out.println("Account store: " + accounts.storePathDescription());
+            System.out.println("Sessions expire after 30 minutes total or 10 minutes idle.");
             while (!serverSocket.isClosed()) {
-                Socket socket = serverSocket.accept();
+                SSLSocket socket = (SSLSocket) serverSocket.accept();
+                socket.setUseClientMode(false);
                 clientWorkers.execute(() -> handleClient(socket));
             }
         } finally {
+            sessionSweeper.shutdownNow();
             clientWorkers.shutdownNow();
         }
     }
 
-    private void handleClient(Socket socket) {
+    private void handleClient(SSLSocket socket) {
         ClientConnection connection = null;
         try {
             connection = new ClientConnection(socket);
-            String joinRequest = connection.input.readLine();
-            String username = parseJoin(joinRequest);
-            connection.username = username;
+            socket.setSoTimeout(30_000);
+            socket.startHandshake();
+            String authLine = connection.input.readLine();
+            String username = authenticate(authLine, connection);
+            if (username == null) return;
 
-            ClientConnection existing = clients.putIfAbsent(username, connection);
-            if (existing != null) {
-                connection.send("ERROR\tThat username is already connected.");
+            connection.username = username;
+            if (clients.putIfAbsent(username, connection) != null) {
+                connection.send("AUTH_ERROR\tThis account already has an active session.");
                 return;
             }
-
-            connection.send("WELCOME\t" + username);
-            System.out.println(username + " connected from localhost.");
+            connection.startSession();
+            socket.setSoTimeout(0);
+            connection.send("AUTH_OK\t" + username);
+            System.out.println("Authenticated session opened for " + username + ".");
             for (Map.Entry<String, String> announcement : keyAnnouncements.entrySet()) {
                 if (!announcement.getKey().equals(username)) {
                     connection.send(announcement.getValue());
@@ -68,7 +93,13 @@ public final class RelayServer {
 
             String line;
             while ((line = connection.input.readLine()) != null) {
-                if ("QUIT".equals(line)) {
+                if (connection.isExpired(System.currentTimeMillis())) {
+                    connection.send("SESSION_EXPIRED\tPlease log in again.");
+                    break;
+                }
+                connection.touch();
+                if ("LOGOUT".equals(line)) {
+                    connection.send("LOGOUT_OK");
                     break;
                 }
                 if (line.startsWith("KEY\t")) {
@@ -79,8 +110,7 @@ public final class RelayServer {
             }
         } catch (IOException | IllegalArgumentException exception) {
             if (connection != null && connection.username != null) {
-                System.out.println("Connection for " + connection.username
-                        + " ended: " + exception.getMessage());
+                System.out.println("Session for " + connection.username + " ended.");
             }
         } finally {
             if (connection != null) {
@@ -89,7 +119,7 @@ public final class RelayServer {
                     if (wasRegistered) {
                         keyAnnouncements.remove(connection.username);
                         broadcast("PEERLEFT\t" + connection.username, connection);
-                        System.out.println(connection.username + " disconnected.");
+                        System.out.println("Authenticated session closed for " + connection.username + ".");
                     }
                 }
                 connection.close();
@@ -97,8 +127,67 @@ public final class RelayServer {
                 try {
                     socket.close();
                 } catch (IOException ignored) {
-                    // The peer may already have closed the socket.
+                    // The peer may already have closed the TLS socket.
                 }
+            }
+        }
+    }
+
+    private String authenticate(String line, ClientConnection connection) throws IOException {
+        String[] fields = line == null ? new String[0] : line.split("\\t", 4);
+        if (fields.length != 4 || !"AUTH".equals(fields[0])) {
+            connection.send("AUTH_ERROR\tExpected account registration or login over TLS.");
+            return null;
+        }
+        String action = fields[1];
+        String username = fields[2];
+        if (!AccountService.isValidUsername(username)) {
+            connection.send("AUTH_ERROR\tInvalid account name.");
+            return null;
+        }
+
+        final char[] password;
+        try {
+            byte[] encoded = Base64.getDecoder().decode(fields[3]);
+            CharBuffer decoded = StandardCharsets.UTF_8.decode(ByteBuffer.wrap(encoded));
+            password = new char[decoded.remaining()];
+            decoded.get(password);
+            if (decoded.hasArray()) Arrays.fill(decoded.array(), '\0');
+            Arrays.fill(encoded, (byte) 0);
+        } catch (IllegalArgumentException exception) {
+            connection.send("AUTH_ERROR\tInvalid credentials.");
+            return null;
+        }
+
+        if ("REGISTER".equals(action)) {
+            AccountService.RegistrationResult result = accounts.register(username, password);
+            if (result != AccountService.RegistrationResult.CREATED) {
+                connection.send("AUTH_ERROR\tRegistration failed: " + result.name().toLowerCase() + ".");
+                return null;
+            }
+            return username;
+        }
+        if ("LOGIN".equals(action)) {
+            AccountService.LoginResult result = accounts.authenticate(username, password);
+            if (result == AccountService.LoginResult.AUTHENTICATED) return username;
+            connection.send("AUTH_ERROR\tLogin failed or temporarily throttled.");
+            return null;
+        }
+        Arrays.fill(password, '\0');
+        connection.send("AUTH_ERROR\tAccount action must be REGISTER or LOGIN.");
+        return null;
+    }
+
+    private void expireSessions() {
+        long now = System.currentTimeMillis();
+        for (ClientConnection connection : clients.values()) {
+            if (connection.isExpired(now)) {
+                try {
+                    connection.send("SESSION_EXPIRED\tPlease log in again.");
+                } catch (IOException ignored) {
+                    // Closing the socket below still expires the server-side session.
+                }
+                connection.close();
             }
         }
     }
@@ -121,7 +210,7 @@ public final class RelayServer {
                 try {
                     client.send(message);
                 } catch (IOException ignored) {
-                    // The recipient's handler will remove a disconnected client.
+                    // A disconnected peer's handler removes it from the active map.
                 }
             }
         }
@@ -133,9 +222,8 @@ public final class RelayServer {
             sender.send("ERROR\tExpected SEND, recipient, sequence, key version, and envelope.");
             return;
         }
-
         String recipientName = fields[1];
-        if (!isValidUsername(recipientName)) {
+        if (!AccountService.isValidUsername(recipientName)) {
             sender.send("ERROR\tRecipient name is invalid.");
             return;
         }
@@ -145,9 +233,7 @@ public final class RelayServer {
         try {
             sequence = Long.parseLong(fields[2]);
             keyVersion = Long.parseLong(fields[3]);
-            if (sequence < 1 || keyVersion < 0) {
-                throw new NumberFormatException("negative message position");
-            }
+            if (sequence < 1 || keyVersion < 0) throw new NumberFormatException();
         } catch (NumberFormatException exception) {
             sender.send("ERROR\tMessage sequence or key version was invalid.");
             return;
@@ -171,8 +257,7 @@ public final class RelayServer {
             return;
         }
 
-        String encodedEnvelope = Base64.getEncoder().encodeToString(
-                envelope.getBytes(StandardCharsets.UTF_8));
+        String encodedEnvelope = Base64.getEncoder().encodeToString(envelope.getBytes(StandardCharsets.UTF_8));
         try {
             recipient.send("DELIVER\t" + sender.username + "\t" + sequence + "\t"
                     + keyVersion + "\t" + encodedEnvelope);
@@ -182,33 +267,18 @@ public final class RelayServer {
         }
     }
 
-    private static String parseJoin(String line) throws IOException {
-        if (line == null) {
-            throw new IOException("client closed before joining");
-        }
-        String[] fields = line.split("\\t", 2);
-        if (fields.length != 2 || !"JOIN".equals(fields[0]) || !isValidUsername(fields[1])) {
-            throw new IOException("invalid JOIN request");
-        }
-        return fields[1];
-    }
-
-    private static boolean isValidUsername(String username) {
-        return username != null && username.matches("[A-Za-z0-9_-]{1,32}");
-    }
-
     private static final class ClientConnection {
-        private final Socket socket;
+        private final SSLSocket socket;
         private final BufferedReader input;
         private final BufferedWriter output;
-        private String username;
+        private volatile String username;
+        private volatile long sessionStarted;
+        private volatile long lastActivity;
 
-        private ClientConnection(Socket socket) throws IOException {
+        private ClientConnection(SSLSocket socket) throws IOException {
             this.socket = socket;
-            this.input = new BufferedReader(new InputStreamReader(
-                    socket.getInputStream(), StandardCharsets.UTF_8));
-            this.output = new BufferedWriter(new OutputStreamWriter(
-                    socket.getOutputStream(), StandardCharsets.UTF_8));
+            this.input = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            this.output = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         }
 
         private synchronized void send(String line) throws IOException {
@@ -217,11 +287,25 @@ public final class RelayServer {
             output.flush();
         }
 
+        private void startSession() {
+            sessionStarted = System.currentTimeMillis();
+            lastActivity = sessionStarted;
+        }
+
+        private void touch() {
+            lastActivity = System.currentTimeMillis();
+        }
+
+        private boolean isExpired(long now) {
+            return sessionStarted != 0 && (now - sessionStarted >= MAX_SESSION_AGE_MILLIS
+                    || now - lastActivity >= IDLE_SESSION_MILLIS);
+        }
+
         private void close() {
             try {
                 socket.close();
             } catch (IOException ignored) {
-                // The peer may already have closed the socket.
+                // The peer may already have closed the TLS socket.
             }
         }
     }
