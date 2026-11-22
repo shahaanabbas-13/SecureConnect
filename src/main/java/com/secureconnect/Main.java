@@ -3,6 +3,8 @@ package com.secureconnect;
 import com.secureconnect.client.ChatClient;
 import com.secureconnect.client.ClientConsole;
 import com.secureconnect.attacks.AttackProxy;
+import com.secureconnect.experiments.BenchmarkRunner;
+import com.secureconnect.experiments.BenchmarkChartRenderer;
 import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
 import com.secureconnect.security.TlsContexts;
@@ -31,6 +33,8 @@ public final class Main {
                 case "identity-keygen" -> runIdentityKeygen(args);
                 case "attack-proxy" -> runAttackProxy(args);
                 case "dashboard" -> runDashboard(args);
+                case "benchmark" -> BenchmarkRunner.run(args);
+                case "benchmark-chart" -> BenchmarkChartRenderer.render(args);
                 default -> printUsage();
             }
         } catch (IllegalArgumentException exception) {
@@ -127,6 +131,8 @@ public final class Main {
         System.out.println("Generate identity: java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen <username>");
         System.out.println("Attack lab: java -jar target/secureconnect-1.0-SNAPSHOT.jar attack-proxy <eavesdrop|tamper|replay|key-substitution|masquerade|dos> [listenPort] [targetHost] [targetPort]");
         System.out.println("Dashboard:   java -jar target/secureconnect-1.0-SNAPSHOT.jar dashboard");
+        System.out.println("Benchmark:   java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark [iterations] [warmup] [output-directory]");
+        System.out.println("Benchmark charts: java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-chart <summary.csv>");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");

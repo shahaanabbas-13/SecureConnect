@@ -133,6 +133,33 @@ The dashboard refreshes every two seconds from `data\security-events.tsv`. Leave
 
 Events are appended by each process under a file lock. Audit entries include timestamps, event types, severity, account name where relevant, and a short description. They do not include passwords, message plaintext, cryptographic keys, or ciphertext contents. The audit log is local and ignored by Git. The dashboard itself is local to the desktop and reads the same log; it does not expose a network endpoint.
 
+## Experimental evaluation: crypto microbenchmark
+
+Build the project, then run the benchmark from the project folder:
+
+```powershell
+mvn package
+java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark
+```
+
+The default run measures 100 samples per metric after 10 warm-up iterations for 1 KB, 10 KB, 100 KB, and 1 MB payloads. You can set the measured iterations, warm-up iterations, and output directory:
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark 200 20 .\experiments\results
+```
+
+Each run writes three artifacts under `experiments\results`: a raw CSV with every timed sample, a summary CSV with mean/median/p95/standard deviation and throughput, and a metadata text file with the JVM, operating system, architecture, processor count, memory, payload sizes, and run settings. The repository ignores generated result files so measured data can be reviewed before being committed as research evidence.
+
+Generate latency and throughput PNG charts from a summary CSV without adding a plotting dependency:
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-chart .\experiments\results\secureconnect-<run-id>-summary.csv
+```
+
+The two charts are written beside the summary CSV. Repeat the benchmark command for independent runs; each run receives a unique ID and keeps its raw samples and metadata.
+
+Metrics are `plaintext_copy_baseline`, `protected_encrypt`, `protected_decrypt`, and `protected_round_trip`. The protected path uses the actual HKDF-derived message-key schedule and AES-256-GCM implementation. Timing includes nonce generation and per-operation cipher/key derivation. It excludes sockets, TLS, login, UI, and disk I/O. The baseline is an in-memory byte-array copy whose result is retained, not an unencrypted network transmission. Treat these as local microbenchmark measurements; they do not establish end-to-end network latency or general performance claims. Repeat runs on the same machine and report their variability before drawing conclusions.
+
 ## Controlled attack lab
 
 The localhost-only proxy can observe ciphertext metadata, tamper with one encrypted message, replay one message, or alter one signed key announcement. Since TLS is enabled, the proxy uses the local server certificate to terminate and re-establish TLS; this models a trusted/compromised TLS endpoint for teaching application-layer controls. Follow [docs/attack-lab.md](docs/attack-lab.md). The proxy only accepts loopback targets and binds to loopback itself.
