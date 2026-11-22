@@ -158,6 +158,17 @@ java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-chart .\experiments\re
 
 The two charts are written beside the summary CSV. Repeat the benchmark command for independent runs; each run receives a unique ID and keeps its raw samples and metadata.
 
+Aggregate independent runs after collecting summaries with matching payloads and iteration settings:
+
+```powershell
+$summaries = Get-ChildItem .\experiments\results\secureconnect-*-summary.csv |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 5
+java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-aggregate $summaries.FullName
+```
+
+The aggregator rejects duplicate run IDs, incomplete/mismatched metric sets, or different sample/warm-up settings. It writes one CSV beside the input summaries with the mean of per-run mean latencies, between-run sample standard deviation, min/max run means, mean per-run medians and p95 values, and average throughput. It does not pool raw samples across JVM runs.
+
 Metrics are `plaintext_copy_baseline`, `protected_encrypt`, `protected_decrypt`, and `protected_round_trip`. The protected path uses the actual HKDF-derived message-key schedule and AES-256-GCM implementation. Timing includes nonce generation and per-operation cipher/key derivation. It excludes sockets, TLS, login, UI, and disk I/O. The baseline is an in-memory byte-array copy whose result is retained, not an unencrypted network transmission. Treat these as local microbenchmark measurements; they do not establish end-to-end network latency or general performance claims. Repeat runs on the same machine and report their variability before drawing conclusions.
 
 ### Message-layer security-control trials
@@ -175,6 +186,8 @@ The default runs 100 trials each for ciphertext tampering, duplicate replay, out
 The localhost-only proxy can observe ciphertext metadata, tamper with one encrypted message, replay one message, or alter one signed key announcement. Since TLS is enabled, the proxy uses the local server certificate to terminate and re-establish TLS; this models a trusted/compromised TLS endpoint for teaching application-layer controls. Follow [docs/attack-lab.md](docs/attack-lab.md). The proxy only accepts loopback targets and binds to loopback itself.
 
 ## Research work to complete
+
+See [docs/evaluation-results.md](docs/evaluation-results.md) for the first recorded microbenchmark and security-control trial results, their limits, and the next repeat-run protocol.
 
 - Review 5–10 primary research/standards sources on E2EE, authenticated key exchange, replay protection, and key rotation; map each source to a feature and avoid novelty claims until this review is complete.
 - Specify a threat model, trust assumptions, key verification model, replay-state persistence, and limits (two users, text messages, local controlled environment).
