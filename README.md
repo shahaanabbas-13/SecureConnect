@@ -142,7 +142,7 @@ mvn package
 java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark
 ```
 
-The default run measures 100 samples per metric after 10 warm-up iterations for 1 KB, 10 KB, 100 KB, and 1 MB payloads. You can set the measured iterations, warm-up iterations, and output directory:
+The default run measures 100 samples per metric after 100 warm-up iterations for 1 KB, 10 KB, 100 KB, and 1 MB payloads. All metrics are warmed together, then sample order rotates to reduce order effects. You can set the measured iterations, warm-up iterations, and output directory:
 
 ```powershell
 java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark 200 20 .\experiments\results
@@ -159,6 +159,16 @@ java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-chart .\experiments\re
 The two charts are written beside the summary CSV. Repeat the benchmark command for independent runs; each run receives a unique ID and keeps its raw samples and metadata.
 
 Metrics are `plaintext_copy_baseline`, `protected_encrypt`, `protected_decrypt`, and `protected_round_trip`. The protected path uses the actual HKDF-derived message-key schedule and AES-256-GCM implementation. Timing includes nonce generation and per-operation cipher/key derivation. It excludes sockets, TLS, login, UI, and disk I/O. The baseline is an in-memory byte-array copy whose result is retained, not an unencrypted network transmission. Treat these as local microbenchmark measurements; they do not establish end-to-end network latency or general performance claims. Repeat runs on the same machine and report their variability before drawing conclusions.
+
+### Message-layer security-control trials
+
+Run repeatable local checks of the message integrity and sequence controls used by the client:
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar security-evaluation
+```
+
+The default runs 100 trials each for ciphertext tampering, duplicate replay, out-of-order sequence, and an invalid key version. Set the count and output directory with `security-evaluation 500 .\experiments\results`. Results are written to a CSV with attempts, rejected attempts, and detection percentage. Every trial also verifies that a valid message is accepted before the attack checks. These controlled local trials exercise message-layer code; they do not measure live network attack rates, server capacity, or complete end-to-end session behavior. Replay state is scoped to the client session and resets when a new client process starts.
 
 ## Controlled attack lab
 

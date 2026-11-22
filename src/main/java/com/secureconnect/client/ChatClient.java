@@ -4,6 +4,7 @@ import com.secureconnect.crypto.MessageKeySchedule;
 import com.secureconnect.keymanagement.SessionKeyExchange;
 import com.secureconnect.security.SecurityEventLog;
 import com.secureconnect.security.SecurityEventLog.Severity;
+import com.secureconnect.security.IncomingSequenceGuard;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -30,7 +31,7 @@ public final class ChatClient {
     private final SessionKeyExchange.LocalSession localSession;
     private volatile MessageKeySchedule keySchedule;
     private final AtomicLong nextOutgoingSequence = new AtomicLong(1);
-    private long nextIncomingSequence = 1;
+    private IncomingSequenceGuard incomingSequenceGuard = new IncomingSequenceGuard();
     private long lastAnnouncedOutgoingVersion = -1;
 
     public ChatClient(String host, int port, String username, String peerUsername,
@@ -202,7 +203,7 @@ public final class ChatClient {
                                 previous.clear();
                             }
                             nextOutgoingSequence.set(1);
-                            nextIncomingSequence = 1;
+                            incomingSequenceGuard = new IncomingSequenceGuard();
                             lastAnnouncedOutgoingVersion = -1;
                             SecurityEventLog.record("E2EE_SESSION_CLEARED", Severity.INFO, username,
                                     "Peer disconnect cleared the local end-to-end session keys.");
@@ -248,7 +249,6 @@ public final class ChatClient {
             keySchedule = new MessageKeySchedule(sessionKey, username, peerUsername);
             java.util.Arrays.fill(sessionKey, (byte) 0);
             nextOutgoingSequence.set(1);
-            nextIncomingSequence = 1;
             lastAnnouncedOutgoingVersion = -1;
             System.out.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
         } catch (IllegalArgumentException | SecurityException exception) {
@@ -276,17 +276,22 @@ public final class ChatClient {
         try {
             long sequence = Long.parseLong(fields[2]);
             long keyVersion = Long.parseLong(fields[3]);
-            if (sequence != nextIncomingSequence) {
+            if (sequence != incomingSequenceGuard.expectedSequence()) {
                 SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
                         "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
                 System.out.println("\n[SECURITY] Replayed or out-of-order message rejected (expected sequence "
-                        + nextIncomingSequence + ", received " + sequence + ").");
+                        + incomingSequenceGuard.expectedSequence() + ", received " + sequence + ").");
                 return;
             }
             String encryptedMessage = new String(Base64.getDecoder().decode(fields[4]),
                     StandardCharsets.UTF_8);
             String message = activeSchedule.decrypt(encryptedMessage, fields[1], sequence, keyVersion);
-            nextIncomingSequence++;
+            if (!incomingSequenceGuard.accept(sequence)) {
+                SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
+                        "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
+                System.out.println("\n[SECURITY] Replayed or out-of-order message rejected.");
+                return;
+            }
             System.out.println("\n[" + fields[1] + "]: " + message);
         } catch (IllegalArgumentException | SecurityException exception) {
             SecurityEventLog.record("MESSAGE_INTEGRITY_REJECTED", Severity.ALERT, username,

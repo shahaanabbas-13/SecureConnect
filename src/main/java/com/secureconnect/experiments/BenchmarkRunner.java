@@ -30,7 +30,7 @@ public final class BenchmarkRunner {
 
     public static void run(String[] args) throws IOException {
         int iterations = args.length >= 2 ? parsePositive(args[1], "iterations", 10_000) : 100;
-        int warmup = args.length >= 3 ? parseNonnegative(args[2], "warm-up iterations", 1_000) : 10;
+        int warmup = args.length >= 3 ? parseNonnegative(args[2], "warm-up iterations", 1_000) : 100;
         Path outputDirectory = args.length >= 4 ? Path.of(args[3]) : DEFAULT_OUTPUT_DIRECTORY;
         if (args.length > 4) {
             throw new IllegalArgumentException("benchmark syntax: benchmark [iterations] [warmup] [output-directory]");
@@ -52,34 +52,47 @@ public final class BenchmarkRunner {
                 byte[] plaintextBytes = new byte[payloadSize];
                 Arrays.fill(plaintextBytes, (byte) 'S');
                 String plaintext = new String(plaintextBytes, StandardCharsets.UTF_8);
-                MessageKeySchedule keySchedule = new MessageKeySchedule(sessionRootKey, "BenchmarkAlice", "BenchmarkBob");
-                String encryptedForDecrypt = keySchedule.encrypt(plaintext, 1);
-
-                summaries.add(measure(raw, runId, payloadSize, "plaintext_copy_baseline", iterations,
-                        warmup, payloadSize, () -> {
-                            benchmarkSink = Arrays.copyOf(plaintextBytes, plaintextBytes.length);
-                        }));
-                summaries.add(measure(raw, runId, payloadSize, "protected_encrypt", iterations,
-                        warmup, payloadSize, () -> benchmarkSink = keySchedule.encrypt(plaintext, 1)));
-                summaries.add(measure(raw, runId, payloadSize, "protected_decrypt", iterations,
-                        warmup, payloadSize, () -> {
-                            String decoded = keySchedule.decrypt(encryptedForDecrypt, "BenchmarkAlice", 1, 0);
+                MessageKeySchedule senderSchedule = new MessageKeySchedule(
+                        sessionRootKey, "BenchmarkAlice", "BenchmarkBob");
+                MessageKeySchedule receiverSchedule = new MessageKeySchedule(
+                        sessionRootKey, "BenchmarkBob", "BenchmarkAlice");
+                String encryptedForDecrypt = senderSchedule.encrypt(plaintext, 1);
+                long[] sequence = {1};
+                List<TimedOperation> operations = List.of(
+                        () -> benchmarkSink = Arrays.copyOf(plaintextBytes, plaintextBytes.length),
+                        () -> benchmarkSink = senderSchedule.encrypt(plaintext, 1),
+                        () -> {
+                            String decoded = receiverSchedule.decrypt(encryptedForDecrypt, "BenchmarkAlice", 1, 0);
                             if (!plaintext.equals(decoded)) throw new IllegalStateException("decryption result mismatch");
                             benchmarkSink = decoded;
-                        }));
-                long[] sequence = {1};
-                summaries.add(measure(raw, runId, payloadSize, "protected_round_trip", iterations,
-                        warmup, (long) payloadSize * 2, () -> {
+                        },
+                        () -> {
                             long currentSequence = sequence[0]++;
-                            long version = keySchedule.keyVersionFor(currentSequence);
-                            String envelope = keySchedule.encrypt(plaintext, currentSequence);
-                            String decoded = keySchedule.decrypt(envelope, "BenchmarkAlice", currentSequence, version);
+                            long version = senderSchedule.keyVersionFor(currentSequence);
+                            String envelope = senderSchedule.encrypt(plaintext, currentSequence);
+                            String decoded = receiverSchedule.decrypt(envelope, "BenchmarkAlice", currentSequence, version);
                             if (!plaintext.equals(decoded)) throw new IllegalStateException("round-trip result mismatch");
                             benchmarkSink = decoded;
-                        }));
-                keySchedule.clear();
+                        });
+                String[] metricNames = {"plaintext_copy_baseline", "protected_encrypt",
+                        "protected_decrypt", "protected_round_trip"};
+                long[][] samples = measureInterleaved(raw, runId, payloadSize, metricNames,
+                        iterations, warmup, operations);
+                for (int metric = 0; metric < metricNames.length; metric++) {
+                    summaries.add(Summary.from(payloadSize, metricNames[metric], iterations,
+                            warmup, samples[metric]));
+                }
+                senderSchedule.clear();
+                receiverSchedule.clear();
                 Arrays.fill(plaintextBytes, (byte) 0);
             }
+        } catch (IOException | RuntimeException exception) {
+            try {
+                Files.deleteIfExists(rawPath);
+            } catch (IOException ignored) {
+                // Retain the original benchmark failure if cleanup is blocked by another process.
+            }
+            throw exception;
         } finally {
             Arrays.fill(sessionRootKey, (byte) 0);
         }
@@ -94,23 +107,30 @@ public final class BenchmarkRunner {
         System.out.println("This microbenchmark excludes sockets, TLS, login, UI, and disk I/O from timed operations.");
     }
 
-    private static Summary measure(BufferedWriter raw, String runId, int payloadSize, String metric,
-                                   int iterations, int warmup, long processedBytesPerSample,
-                                   TimedOperation operation) throws IOException {
-        for (int index = 0; index < warmup; index++) operation.run();
-        long[] samples = new long[iterations];
-        for (int index = 0; index < iterations; index++) {
-            long start = System.nanoTime();
-            operation.run();
-            long elapsed = System.nanoTime() - start;
-            samples[index] = elapsed;
-            double throughput = ((double) processedBytesPerSample / (1024.0 * 1024.0))
-                    / (elapsed / 1_000_000_000.0);
-            raw.write(String.format(Locale.ROOT, "%s,%d,%s,%d,%d,%d,%.6f%n", runId,
-                    payloadSize, metric, index + 1, elapsed, processedBytesPerSample, throughput));
+    private static long[][] measureInterleaved(BufferedWriter raw, String runId, int payloadSize,
+                                               String[] metricNames, int iterations, int warmup,
+                                               List<TimedOperation> operations) throws IOException {
+        for (int index = 0; index < warmup; index++) {
+            for (TimedOperation operation : operations) operation.run();
+        }
+        long[][] samples = new long[operations.size()][iterations];
+        for (int sample = 0; sample < iterations; sample++) {
+            int firstMetric = sample % operations.size();
+            for (int offset = 0; offset < operations.size(); offset++) {
+                int metric = (firstMetric + offset) % operations.size();
+                long processedBytes = metric == 3 ? (long) payloadSize * 2 : payloadSize;
+                long start = System.nanoTime();
+                operations.get(metric).run();
+                long elapsed = System.nanoTime() - start;
+                samples[metric][sample] = elapsed;
+                double throughput = ((double) processedBytes / (1024.0 * 1024.0))
+                        / (elapsed / 1_000_000_000.0);
+                raw.write(String.format(Locale.ROOT, "%s,%d,%s,%d,%d,%d,%.6f%n", runId,
+                        payloadSize, metricNames[metric], sample + 1, elapsed, processedBytes, throughput));
+            }
         }
         raw.flush();
-        return Summary.from(payloadSize, metric, iterations, warmup, samples);
+        return samples;
     }
 
     private static void writeSummary(Path path, String runId, int iterations, int warmup,
@@ -143,6 +163,7 @@ public final class BenchmarkRunner {
                 + "Payload sizes bytes: " + Arrays.toString(PAYLOAD_SIZES) + "\n"
                 + "Measured iterations per metric and payload: " + iterations + "\n"
                 + "Warm-up iterations per metric and payload: " + warmup + "\n"
+                + "Sampling order: all metrics warmed together, then interleaved in rotating order per sample.\n"
                 + "Protected path: HKDF-derived message key + AES-256-GCM encrypt/decrypt using the project implementation.\n"
                 + "Baseline: in-memory plaintext byte-array copy retained in a volatile sink; not a network or server baseline.\n"
                 + "Timing: System.nanoTime; no sockets, TLS, authentication, UI, or disk I/O inside timed operations.\n"
