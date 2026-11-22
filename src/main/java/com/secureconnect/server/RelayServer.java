@@ -1,6 +1,8 @@
 package com.secureconnect.server;
 
 import com.secureconnect.security.AccountService;
+import com.secureconnect.security.SecurityEventLog;
+import com.secureconnect.security.SecurityEventLog.Severity;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
@@ -55,6 +57,8 @@ public final class RelayServer {
                     + ":" + port);
             System.out.println("Account store: " + accounts.storePathDescription());
             System.out.println("Sessions expire after 30 minutes total or 10 minutes idle.");
+            SecurityEventLog.record("SERVER_STARTED", Severity.INFO, "relay",
+                    "TLS relay started on loopback port " + port + ".");
             while (!serverSocket.isClosed()) {
                 SSLSocket socket = (SSLSocket) serverSocket.accept();
                 socket.setUseClientMode(false);
@@ -78,10 +82,14 @@ public final class RelayServer {
 
             connection.username = username;
             if (clients.putIfAbsent(username, connection) != null) {
+                SecurityEventLog.record("SESSION_DUPLICATE_REJECTED", Severity.WARNING, username,
+                        "A second simultaneous session was refused.");
                 connection.send("AUTH_ERROR\tThis account already has an active session.");
                 return;
             }
             connection.startSession();
+            SecurityEventLog.record("SESSION_OPENED", Severity.INFO, username,
+                    "Authenticated TLS session opened.");
             socket.setSoTimeout(0);
             connection.send("AUTH_OK\t" + username);
             System.out.println("Authenticated session opened for " + username + ".");
@@ -99,6 +107,8 @@ public final class RelayServer {
                 }
                 connection.touch();
                 if ("LOGOUT".equals(line)) {
+                    SecurityEventLog.record("SESSION_LOGOUT", Severity.INFO, username,
+                            "User ended the authenticated session.");
                     connection.send("LOGOUT_OK");
                     break;
                 }
@@ -120,6 +130,8 @@ public final class RelayServer {
                         keyAnnouncements.remove(connection.username);
                         broadcast("PEERLEFT\t" + connection.username, connection);
                         System.out.println("Authenticated session closed for " + connection.username + ".");
+                        SecurityEventLog.record("SESSION_CLOSED", Severity.INFO, connection.username,
+                                "Authenticated TLS connection closed.");
                     }
                 }
                 connection.close();
@@ -162,17 +174,29 @@ public final class RelayServer {
         if ("REGISTER".equals(action)) {
             AccountService.RegistrationResult result = accounts.register(username, password);
             if (result != AccountService.RegistrationResult.CREATED) {
+                SecurityEventLog.record("REGISTRATION_REJECTED", Severity.WARNING, username,
+                        "Account registration was rejected: " + result.name().toLowerCase() + ".");
                 connection.send("AUTH_ERROR\tRegistration failed: " + result.name().toLowerCase() + ".");
                 return null;
             }
+            SecurityEventLog.record("ACCOUNT_REGISTERED", Severity.INFO, username,
+                    "Account created with a salted Argon2id password verifier.");
             return username;
         }
         if ("LOGIN".equals(action)) {
             AccountService.LoginResult result = accounts.authenticate(username, password);
-            if (result == AccountService.LoginResult.AUTHENTICATED) return username;
+            if (result == AccountService.LoginResult.AUTHENTICATED) {
+                SecurityEventLog.record("LOGIN_SUCCEEDED", Severity.INFO, username,
+                        "Account password verification succeeded.");
+                return username;
+            }
             if (result == AccountService.LoginResult.THROTTLED) {
+                SecurityEventLog.record("LOGIN_THROTTLED", Severity.ALERT, username,
+                        "Login blocked after repeated failed password attempts.");
                 connection.send("AUTH_ERROR\tLogin failed. Too many failed attempts; login is temporarily blocked for 60 seconds.");
             } else {
+                SecurityEventLog.record("AUTH_FAILED", Severity.WARNING, username,
+                        "Account password verification failed.");
                 connection.send("AUTH_ERROR\tLogin failed.");
             }
             return null;
@@ -186,6 +210,8 @@ public final class RelayServer {
         long now = System.currentTimeMillis();
         for (ClientConnection connection : clients.values()) {
             if (connection.isExpired(now)) {
+                SecurityEventLog.record("SESSION_EXPIRED", Severity.WARNING, connection.username,
+                        "Session exceeded its idle or maximum lifetime.");
                 try {
                     connection.send("SESSION_EXPIRED\tPlease log in again.");
                 } catch (IOException ignored) {
@@ -199,6 +225,8 @@ public final class RelayServer {
     private void handleKeyAnnouncement(ClientConnection sender, String line) throws IOException {
         String[] fields = line.split("\\t", 4);
         if (fields.length != 4) {
+            SecurityEventLog.record("KEY_ANNOUNCEMENT_REJECTED", Severity.WARNING, sender.username,
+                    "Malformed signed-key announcement was rejected.");
             sender.send("ERROR\tMalformed key announcement.");
             return;
         }
@@ -223,11 +251,15 @@ public final class RelayServer {
     private void handleMessage(ClientConnection sender, String line) throws IOException {
         String[] fields = line.split("\\t", 5);
         if (fields.length != 5 || !"SEND".equals(fields[0])) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Malformed message frame was rejected.");
             sender.send("ERROR\tExpected SEND, recipient, sequence, key version, and envelope.");
             return;
         }
         String recipientName = fields[1];
         if (!AccountService.isValidUsername(recipientName)) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Message with an invalid recipient name was rejected.");
             sender.send("ERROR\tRecipient name is invalid.");
             return;
         }
@@ -239,6 +271,8 @@ public final class RelayServer {
             keyVersion = Long.parseLong(fields[3]);
             if (sequence < 1 || keyVersion < 0) throw new NumberFormatException();
         } catch (NumberFormatException exception) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Message with an invalid sequence or key epoch was rejected.");
             sender.send("ERROR\tMessage sequence or key version was invalid.");
             return;
         }
@@ -247,16 +281,22 @@ public final class RelayServer {
         try {
             envelope = new String(Base64.getDecoder().decode(fields[4]), StandardCharsets.UTF_8);
         } catch (IllegalArgumentException exception) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Message with an invalid envelope encoding was rejected.");
             sender.send("ERROR\tMessage envelope encoding was invalid.");
             return;
         }
         if (envelope.isBlank()) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Empty encrypted message envelope was rejected.");
             sender.send("ERROR\tMessage envelope cannot be empty.");
             return;
         }
 
         ClientConnection recipient = clients.get(recipientName);
         if (recipient == null) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Message delivery requested for an offline account.");
             sender.send("ERROR\t" + recipientName + " is not connected.");
             return;
         }
@@ -266,7 +306,11 @@ public final class RelayServer {
             recipient.send("DELIVER\t" + sender.username + "\t" + sequence + "\t"
                     + keyVersion + "\t" + encodedEnvelope);
             sender.send("SENT\t" + recipientName);
+            SecurityEventLog.record("MESSAGE_ROUTED", Severity.INFO, sender.username,
+                    "Encrypted message envelope routed to " + recipientName + " (sequence " + sequence + ").");
         } catch (IOException exception) {
+            SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
+                    "Message could not be delivered to the active recipient connection.");
             sender.send("ERROR\tCould not deliver message to " + recipientName + ".");
         }
     }

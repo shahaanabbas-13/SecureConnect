@@ -1,5 +1,8 @@
 package com.secureconnect.attacks;
 
+import com.secureconnect.security.SecurityEventLog;
+import com.secureconnect.security.SecurityEventLog.Severity;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -113,6 +116,8 @@ public final class AttackProxy {
                             line = String.join("\t", authFields);
                             masqueradeJoin.set(true);
                             System.out.println("[MASQUERADE] Changed Mallory's login name to Alice; the server checks Alice's password.");
+                            SecurityEventLog.record("ATTACK_MASQUERADE", Severity.ALERT, "Mallory",
+                                    "Changed the claimed login name to Alice; relay password verification should reject the request.");
                         } else {
                             System.out.println("[MASQUERADE] Only a login attempt is rewritten; account registration is not altered.");
                         }
@@ -151,6 +156,9 @@ public final class AttackProxy {
                 System.out.println("[EAVESDROP] " + clientName + " -> " + fields[1]
                         + ", sequence=" + fields[2] + ", keyVersion=" + fields[3]
                         + ", encoded envelope=" + bytes + " characters; no plaintext observed.");
+                SecurityEventLog.record("ATTACK_EAVESDROP", Severity.WARNING, clientName,
+                        "Observed encrypted message metadata for " + fields[1] + " (sequence "
+                                + fields[2] + "); plaintext was not available.");
             }
             return line;
         }
@@ -160,6 +168,8 @@ public final class AttackProxy {
             String changed = tamperEnvelope(line);
             if (changed != null) {
                 System.out.println("[TAMPER] Altered the first ciphertext before it reached the relay.");
+                SecurityEventLog.record("ATTACK_TAMPER", Severity.ALERT, clientName,
+                        "Modified one encrypted message envelope before relay delivery.");
                 return changed;
             }
             attackApplied.set(false);
@@ -168,6 +178,8 @@ public final class AttackProxy {
         if (mode == Mode.REPLAY && line.startsWith("SEND\t")
                 && attackApplied.compareAndSet(false, true)) {
             System.out.println("[REPLAY] Captured the first SEND frame for duplicate delivery.");
+            SecurityEventLog.record("ATTACK_REPLAY", Severity.ALERT, clientName,
+                    "Captured a SEND frame for one duplicate replay attempt.");
         }
 
         if (mode == Mode.KEY_SUBSTITUTION && line.startsWith("KEY\t")
@@ -175,6 +187,8 @@ public final class AttackProxy {
             String changed = tamperSignature(line);
             if (changed != null) {
                 System.out.println("[KEY-SUBSTITUTION] Changed a signed ephemeral-key announcement.");
+                SecurityEventLog.record("ATTACK_KEY_SUBSTITUTION", Severity.ALERT, clientName,
+                        "Modified a signed ephemeral-key announcement.");
                 return changed;
             }
             attackApplied.set(false);
@@ -239,6 +253,8 @@ public final class AttackProxy {
         System.out.println("[DOS] Sending a bounded burst of " + DOS_BURST_SIZE
                 + " concurrent localhost connections to " + targetHost + ":" + targetPort + ".");
         System.out.println("This relay has no connection rate limit yet; this is a small baseline only.");
+        SecurityEventLog.record("ATTACK_DOS_BASELINE", Severity.WARNING, "attack-lab",
+                "Started a bounded burst of " + DOS_BURST_SIZE + " local TLS authentication probes.");
         CountDownLatch connected = new CountDownLatch(DOS_BURST_SIZE);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger accepted = new AtomicInteger();
@@ -293,6 +309,8 @@ public final class AttackProxy {
         System.out.println("[DOS] TLS relay completed " + accepted.get() + " of " + DOS_BURST_SIZE
                 + " unauthenticated handshake/request attempts.");
         System.out.println("No crash or resource exhaustion was attempted.");
+        SecurityEventLog.record("ATTACK_DOS_BASELINE_COMPLETE", Severity.INFO, "attack-lab",
+                "Relay completed " + accepted.get() + " of " + DOS_BURST_SIZE + " bounded probes.");
     }
 
     private static void validatePort(int port) {

@@ -14,6 +14,14 @@ The proxy presents the same local certificate as the relay and trusts the relay 
 
 ## Start a scenario
 
+To watch audit entries while the attack lab runs, open another terminal in the project folder and start the dashboard:
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar dashboard
+```
+
+It refreshes from the shared local audit log every two seconds. Attack attempts and client-side rejections appear as separate events where both sides observe the same scenario.
+
 Build and create Alice and Bob's identity keys once if needed:
 
 ```powershell

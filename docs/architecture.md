@@ -9,6 +9,8 @@
 | Relay account store | No | No | Store salted Argon2id password verifiers; never store plaintext account passwords |
 | Persistence | No | No | Store ciphertext, nonce/tag or serialized AEAD envelope, sender/recipient IDs, message/session IDs, timestamps and delivery state |
 | Attack harness | Can see TLS-protected application frames because it terminates local test TLS; cannot see message plaintext | Test certificate only; no E2EE message keys | Mutate, observe, and replay controlled local traffic for demonstrations |
+| Audit event log | No | No | Append timestamped security and attack-simulation metadata; excludes credentials and message contents |
+| Desktop dashboard | No | No | Read the local audit log and summarize recent security events; local desktop process only |
 
 The prototype uses client-side AES-256-GCM with a key derived from ephemeral X25519 agreement. Each ephemeral public key and session identifier is signed by a long-term Ed25519 identity key. Clients verify the signature against a manually pinned peer Ed25519 key before deriving a session key with HKDF-SHA-256. TLS protects each client-to-relay connection, and clients validate the relay certificate against a local truststore. The relay binds to localhost, authenticates accounts with Argon2id verifiers, ties each active session to its TLS connection, and derives the sender identity from the authenticated account rather than a caller-supplied message field. It forwards signed key announcements and opaque encrypted envelopes; it does not hold private identity, ephemeral, or end-to-end session keys. Public identity keys must be verified out of band; trusting a key supplied by the relay would allow key substitution. Private identity key files and the local TLS private key are stored unencrypted in local keystores for this educational prototype. Do not expose it to a network or use sensitive messages.
 
@@ -23,6 +25,10 @@ The prototype uses client-side AES-256-GCM with a key derived from ephemeral X25
 7. Relay authorizes message sending based on the authenticated connection principal, validates the recipient and routes only to an active recipient account. Login attempts are throttled per username. Sessions expire after 30 minutes total or 10 minutes idle. The current clients perform replay rejection at the receiver.
 
 The receiver rejects duplicate and out-of-order sequence numbers, and advances its counter only after successful GCM authentication. This state is in memory and resets with a new session; the relay itself does not deduplicate. Key epochs change every 10 messages in each direction. Since each epoch is derived from the retained session root, this is not a forward-secure ratchet: compromise of that root can derive earlier and later epoch keys. Session and login-throttle state are in memory; the account verifier store is local and persistent. A production design needs a reviewed ratchet or fresh authenticated key exchange, durable replay and rate-limit state where needed, a defined delayed-message policy, protected at-rest storage, and stronger account/session operations.
+
+## Security event dashboard
+
+Relay, client, and attack-proxy processes append tab-separated audit records to `data/security-events.tsv` (or the path in `SECURECONNECT_EVENT_LOG`). Actor and summary fields are URL-safe Base64 encoded so tabs/newlines cannot forge audit rows. Appends use a JVM mutex plus an OS file lock to coordinate local processes. The Swing dashboard refreshes from that shared log every two seconds and displays up to 5,000 recent valid events. Event summaries deliberately exclude passwords, message plaintext, cryptographic keys, and ciphertext. The log remains local and is not a durable tamper-proof audit store.
 
 ## Scope and limits
 

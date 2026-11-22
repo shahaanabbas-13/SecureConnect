@@ -6,6 +6,9 @@ import com.secureconnect.attacks.AttackProxy;
 import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
 import com.secureconnect.security.TlsContexts;
+import com.secureconnect.security.SecurityDashboard;
+import com.secureconnect.security.SecurityEventLog;
+import com.secureconnect.security.SecurityEventLog.Severity;
 
 import java.io.IOException;
 
@@ -27,6 +30,7 @@ public final class Main {
                 case "client" -> runClient(args);
                 case "identity-keygen" -> runIdentityKeygen(args);
                 case "attack-proxy" -> runAttackProxy(args);
+                case "dashboard" -> runDashboard(args);
                 default -> printUsage();
             }
         } catch (IllegalArgumentException exception) {
@@ -92,6 +96,16 @@ public final class Main {
                 TlsContexts.clientContextFromEnvironment()).start();
     }
 
+    private static void runDashboard(String[] args) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("dashboard accepts no additional arguments");
+        }
+        SecurityEventLog.record("DASHBOARD_OPENED", Severity.INFO, "dashboard",
+                "Local security event dashboard opened.");
+        System.out.println("Opening local security dashboard. Audit log: " + SecurityEventLog.logPath());
+        SecurityDashboard.launch();
+    }
+
     private static int parsePort(String value) {
         try {
             int port = Integer.parseInt(value);
@@ -112,6 +126,7 @@ public final class Main {
         System.out.println("Start client: java -jar target/secureconnect-1.0-SNAPSHOT.jar client <username> <peer> [host] [port]");
         System.out.println("Generate identity: java -jar target/secureconnect-1.0-SNAPSHOT.jar identity-keygen <username>");
         System.out.println("Attack lab: java -jar target/secureconnect-1.0-SNAPSHOT.jar attack-proxy <eavesdrop|tamper|replay|key-substitution|masquerade|dos> [listenPort] [targetHost] [targetPort]");
+        System.out.println("Dashboard:   java -jar target/secureconnect-1.0-SNAPSHOT.jar dashboard");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");

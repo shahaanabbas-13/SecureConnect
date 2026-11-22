@@ -23,6 +23,7 @@ certs/*.jks
 certs/*.key
 data/accounts.properties
 data/accounts.properties.tmp
+data/security-events.tsv
 
 # OS files
 Thumbs.db

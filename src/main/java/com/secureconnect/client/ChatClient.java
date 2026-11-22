@@ -2,6 +2,8 @@ package com.secureconnect.client;
 
 import com.secureconnect.crypto.MessageKeySchedule;
 import com.secureconnect.keymanagement.SessionKeyExchange;
+import com.secureconnect.security.SecurityEventLog;
+import com.secureconnect.security.SecurityEventLog.Severity;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -99,8 +101,9 @@ public final class ChatClient {
 
             String welcome = serverInput.readLine();
             if (welcome == null || welcome.startsWith("AUTH_ERROR\t")) {
-                System.out.println(welcome == null ? "Relay closed the TLS connection."
-                        : welcome.substring("AUTH_ERROR\t".length()));
+                String message = welcome == null ? "Relay closed the TLS connection."
+                        : welcome.substring("AUTH_ERROR\t".length());
+                System.out.println(message);
                 return;
             }
             if (!welcome.equals("AUTH_OK\t" + username)) {
@@ -201,11 +204,17 @@ public final class ChatClient {
                             nextOutgoingSequence.set(1);
                             nextIncomingSequence = 1;
                             lastAnnouncedOutgoingVersion = -1;
+                            SecurityEventLog.record("E2EE_SESSION_CLEARED", Severity.INFO, username,
+                                    "Peer disconnect cleared the local end-to-end session keys.");
                             System.out.println("\n[SECURITY] Peer disconnected; session key cleared.");
                         }
                     }
-                    case "SESSION_EXPIRED" -> System.out.println("\n[SESSION] "
-                            + (fields.length > 1 ? fields[1] : "Session expired."));
+                    case "SESSION_EXPIRED" -> {
+                        SecurityEventLog.record("SESSION_EXPIRED", Severity.WARNING, username,
+                                "Relay expired this connection-bound session.");
+                        System.out.println("\n[SESSION] "
+                                + (fields.length > 1 ? fields[1] : "Session expired."));
+                    }
                     case "LOGOUT_OK" -> System.out.println("\nLogged out.");
                     case "DELIVER" -> handleDelivery(fields);
                     case "SENT" -> {
@@ -248,6 +257,8 @@ public final class ChatClient {
             if (previous != null) {
                 previous.clear();
             }
+            SecurityEventLog.record("PEER_KEY_REJECTED", Severity.ALERT, username,
+                    "Peer key announcement failed pinned identity verification.");
             System.out.println("\n[SECURITY] Peer key rejected: " + exception.getMessage());
         }
     }
@@ -266,6 +277,8 @@ public final class ChatClient {
             long sequence = Long.parseLong(fields[2]);
             long keyVersion = Long.parseLong(fields[3]);
             if (sequence != nextIncomingSequence) {
+                SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
+                        "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
                 System.out.println("\n[SECURITY] Replayed or out-of-order message rejected (expected sequence "
                         + nextIncomingSequence + ", received " + sequence + ").");
                 return;
@@ -276,6 +289,8 @@ public final class ChatClient {
             nextIncomingSequence++;
             System.out.println("\n[" + fields[1] + "]: " + message);
         } catch (IllegalArgumentException | SecurityException exception) {
+            SecurityEventLog.record("MESSAGE_INTEGRITY_REJECTED", Severity.ALERT, username,
+                    "Encrypted message envelope failed local integrity or format validation.");
             System.out.println("\n[SECURITY] Message rejected: " + exception.getMessage());
         }
     }

@@ -2,9 +2,9 @@
 
 SecureConnect is an educational Java messaging project for studying end-to-end encryption, authenticated key establishment, replay protection, controlled attack simulations, and their performance costs.
 
-## Current milestone: Account and transport security
+## Current milestone: Local security dashboard
 
-The Java 21 prototype establishes an encrypted session between two console clients. Ed25519 identity keys sign ephemeral X25519 public keys; clients verify a pinned peer identity, then use HKDF-SHA-256 to derive AES-256-GCM session keys. TLS protects the client-to-relay connection. Accounts use Argon2id password verifiers; authenticated sessions belong to one TLS connection and expire after 30 minutes total or 10 minutes idle. The local relay forwards signed key announcements and encrypted message envelopes but never receives the end-to-end session key or message plaintext.
+The Java 21 prototype establishes an encrypted session between two console clients. Ed25519 identity keys sign ephemeral X25519 public keys; clients verify a pinned peer identity, then use HKDF-SHA-256 to derive AES-256-GCM session keys. TLS protects the client-to-relay connection. Accounts use Argon2id password verifiers; authenticated sessions belong to one TLS connection and expire after 30 minutes total or 10 minutes idle. The local relay forwards signed key announcements and encrypted message envelopes but never receives the end-to-end session key or message plaintext. Phase 6 adds a local desktop dashboard for security audit events and controlled attack activity.
 
 ### Verify the Windows development environment
 
@@ -118,7 +118,20 @@ Private identity files are Base64-encoded PKCS#8 data, not encrypted at rest. Th
 7. **Authentication and session security (prototype):** TLS, Argon2id-backed account registration/login, connection-bound sessions, authorization by authenticated account name, session expiry, and in-memory per-account login throttling.
 8. **Evaluation and reporting:** repeat trials across 1 KB, 10 KB, 100 KB, and 1 MB payloads; report latency, throughput, delivery and rejection outcomes, and variability. Keep raw CSV, graph source, and evidence reproducible.
 
-The supplied six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Phases 1–5 now have prototype implementations; the dashboard and experimental evaluation/reporting remain. We use a Java socket relay and local account store rather than MongoDB/Socket.IO because the finalized implementation is Java-based.
+The supplied six-phase proposal places basic messaging first, then encryption, key establishment, attacks, account/session security, and a dashboard. The research blueprint also lists environment setup as Phase 1 and gives Java 21 as the finalized stack. Phases 1–6 now have prototype implementations; experimental evaluation and reporting remain. We use a Java socket relay and local account store rather than MongoDB/Socket.IO because the finalized implementation is Java-based.
+
+## Phase 6: Security dashboard
+
+Build the application and open the desktop dashboard in a separate terminal from the project folder:
+
+```powershell
+mvn package
+java -jar target/secureconnect-1.0-SNAPSHOT.jar dashboard
+```
+
+The dashboard refreshes every two seconds from `data\security-events.tsv`. Leave it open while using the relay, clients, or localhost attack proxy. It summarizes recent authentication/session/rejection events and simulated attack activity, and provides search and severity filters. Up to the latest 5,000 valid events are shown. Set `SECURECONNECT_EVENT_LOG` in every terminal before launching a process if the audit log should use a different shared path.
+
+Events are appended by each process under a file lock. Audit entries include timestamps, event types, severity, account name where relevant, and a short description. They do not include passwords, message plaintext, cryptographic keys, or ciphertext contents. The audit log is local and ignored by Git. The dashboard itself is local to the desktop and reads the same log; it does not expose a network endpoint.
 
 ## Controlled attack lab
 
