@@ -109,25 +109,28 @@ public final class NetworkBenchmarkRunner {
                 senderSchedule = new MessageKeySchedule(senderRoot, senderName, receiverName);
                 receiverSchedule = new MessageKeySchedule(receiverRoot, receiverName, senderName);
 
-                raw.write("run_id,payload_bytes,sample_index,elapsed_ns,throughput_mib_per_sec\n");
+                raw.write("run_id,payload_bytes,sample_index,sender_encrypt_encode_ns,send_to_delivery_ns,receiver_decode_decrypt_ns,send_to_decrypt_ns,post_decrypt_relay_ack_wait_ns,throughput_mib_per_sec\n");
                 for (int payloadSize : PAYLOAD_SIZES) {
                     String plaintext = "M".repeat(payloadSize);
                     for (int warmup = 0; warmup < WARMUP_ITERATIONS; warmup++) {
                         exchange(sender, receiver, senderSchedule, receiverSchedule, senderName,
                                 receiverName, plaintext, sequence[0]++);
                     }
-                    long[] samples = new long[iterations];
+                    List<Measurement> samples = new ArrayList<>(iterations);
                     for (int sample = 0; sample < iterations; sample++) {
-                        long elapsed = exchange(sender, receiver, senderSchedule, receiverSchedule,
+                        Measurement measurement = exchange(sender, receiver, senderSchedule, receiverSchedule,
                                 senderName, receiverName, plaintext, sequence[0]++);
-                        samples[sample] = elapsed;
+                        samples.add(measurement);
+                        long elapsed = measurement.endToDecryptNs();
                         double throughput = ((double) payloadSize / (1024.0 * 1024.0))
                                 / (elapsed / 1_000_000_000.0);
-                        raw.write(String.format(Locale.ROOT, "%s,%d,%d,%d,%.6f%n",
-                                runId, payloadSize, sample + 1, elapsed, throughput));
+                        raw.write(String.format(Locale.ROOT, "%s,%d,%d,%d,%d,%d,%d,%d,%.6f%n",
+                                runId, payloadSize, sample + 1, measurement.encryptPrepareNs(),
+                                measurement.sendToDeliveryNs(), measurement.receiverDecryptNs(),
+                                measurement.endToDecryptNs(), measurement.relayAckWaitNs(), throughput));
                     }
                     raw.flush();
-                    summaries.add(Summary.from(payloadSize, iterations, samples));
+                    summaries.add(Summary.from(payloadSize, samples));
                 }
             }
             writeSummary(summaryPath, runId, iterations, summaries);
@@ -155,6 +158,10 @@ public final class NetworkBenchmarkRunner {
                     formatSize(summary.payloadBytes()), summary.meanNs() / 1_000.0,
                     summary.medianNs() / 1_000.0, summary.p95Ns() / 1_000.0,
                     summary.throughputMiBPerSecond());
+            System.out.printf(Locale.ROOT,
+                    "         phase means (µs): sender %.2f | relay delivery %.2f | receiver decrypt %.2f | post-delivery ack %.2f%n",
+                    summary.meanEncryptPrepareNs() / 1_000.0, summary.meanSendToDeliveryNs() / 1_000.0,
+                    summary.meanReceiverDecryptNs() / 1_000.0, summary.meanRelayAckWaitNs() / 1_000.0);
         }
         System.out.println("Raw samples: " + rawPath.toAbsolutePath());
         System.out.println("Summary:     " + summaryPath.toAbsolutePath());
@@ -163,16 +170,19 @@ public final class NetworkBenchmarkRunner {
         System.out.println("Account login and session-key establishment are excluded from measured samples.");
     }
 
-    private static long exchange(Peer sender, Peer receiver, MessageKeySchedule senderSchedule,
-                                 MessageKeySchedule receiverSchedule, String senderName,
-                                 String receiverName, String plaintext, long sequence) throws IOException {
+    private static Measurement exchange(Peer sender, Peer receiver, MessageKeySchedule senderSchedule,
+                                        MessageKeySchedule receiverSchedule, String senderName,
+                                        String receiverName, String plaintext, long sequence) throws IOException {
         long version = senderSchedule.keyVersionFor(sequence);
         long started = System.nanoTime();
         String envelope = senderSchedule.encrypt(plaintext, sequence);
         String encoded = Base64.getEncoder().encodeToString(envelope.getBytes(StandardCharsets.UTF_8));
+        long encryptPrepareDone = System.nanoTime();
+        long sendStarted = System.nanoTime();
         sender.write("SEND\t" + receiverName + "\t" + sequence + "\t" + version + "\t" + encoded);
 
         String delivered = receiver.readLine();
+        long deliveryReceived = System.nanoTime();
         String[] fields = delivered == null ? new String[0] : delivered.split("\\t", 5);
         if (fields.length != 5 || !"DELIVER".equals(fields[0]) || !senderName.equals(fields[1])) {
             throw new IOException("relay returned an unexpected delivery frame");
@@ -203,25 +213,29 @@ public final class NetworkBenchmarkRunner {
         if (!plaintext.equals(receivedPlaintext)) {
             throw new IOException("receiver plaintext did not match the sent benchmark message");
         }
-        long elapsed = System.nanoTime() - started;
+        long decryptedAt = System.nanoTime();
 
+        long ackWaitStarted = System.nanoTime();
         String acknowledgement = sender.readLine();
+        long ackReceived = System.nanoTime();
         if (!("SENT\t" + receiverName).equals(acknowledgement)) {
             throw new IOException("relay did not acknowledge the delivered message");
         }
-        return elapsed;
+        return new Measurement(encryptPrepareDone - started, deliveryReceived - sendStarted,
+                decryptedAt - deliveryReceived, decryptedAt - started, ackReceived - ackWaitStarted);
     }
 
     private static void writeSummary(Path path, String runId, int iterations,
                                      List<Summary> summaries) throws IOException {
         try (BufferedWriter writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-            writer.write("run_id,payload_bytes,sample_count,warmup_iterations,mean_ns,median_ns,p95_ns,std_dev_ns,mean_throughput_mib_per_sec\n");
+            writer.write("run_id,payload_bytes,sample_count,warmup_iterations,mean_ns,median_ns,p95_ns,std_dev_ns,mean_throughput_mib_per_sec,mean_sender_encrypt_encode_ns,mean_relay_delivery_ns,mean_receiver_decrypt_ns,mean_post_delivery_ack_wait_ns\n");
             for (Summary row : summaries) {
-                writer.write(String.format(Locale.ROOT, "%s,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.6f%n",
+                writer.write(String.format(Locale.ROOT, "%s,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.6f,%.2f,%.2f,%.2f,%.2f%n",
                         runId, row.payloadBytes(), iterations, WARMUP_ITERATIONS, row.meanNs(),
                         row.medianNs(), row.p95Ns(), row.standardDeviationNs(),
-                        row.throughputMiBPerSecond()));
+                        row.throughputMiBPerSecond(), row.meanEncryptPrepareNs(),
+                        row.meanSendToDeliveryNs(), row.meanReceiverDecryptNs(), row.meanRelayAckWaitNs()));
             }
         }
     }
@@ -243,8 +257,10 @@ public final class NetworkBenchmarkRunner {
                 + "Measured samples per payload: " + iterations + "\n"
                 + "Warm-up messages per payload: " + WARMUP_ITERATIONS + "\n"
                 + "Measurement: System.nanoTime from before sender encryption through receiver authentication/decryption.\n"
+                + "Raw phase timings: sender encryption plus envelope encoding; send-to-DELIVER; receiver frame decode/decrypt; post-decrypt SENT acknowledgement wait.\n"
                 + "Includes: sender crypto, TLS socket I/O, loopback TCP, relay routing, receiver TLS and decrypt.\n"
-                + "Excludes: account login, TLS connection setup, signed X25519 key exchange, and warm-up messages.\n"
+                + "Excludes: account login, TLS connection setup, signed X25519 key exchange, warm-up messages, and the per-message audit append.\n"
+                + "After the timed receiver decrypt, the runner waits for the relay SENT acknowledgement; the relay emits it only after its audit append, keeping that work outside the next sample.\n"
                 + "Throughput uses plaintext payload bytes per one-way send-to-decrypt latency.\n";
         Files.writeString(path, metadata, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
@@ -387,21 +403,36 @@ public final class NetworkBenchmarkRunner {
         }
     }
 
+    private record Measurement(long encryptPrepareNs, long sendToDeliveryNs, long receiverDecryptNs,
+                               long endToDecryptNs, long relayAckWaitNs) { }
+
     private record Summary(int payloadBytes, double meanNs, double medianNs, double p95Ns,
-                           double standardDeviationNs, double throughputMiBPerSecond) {
-        static Summary from(int payloadBytes, int iterations, long[] samples) {
+                           double standardDeviationNs, double throughputMiBPerSecond,
+                           double meanEncryptPrepareNs, double meanSendToDeliveryNs,
+                           double meanReceiverDecryptNs, double meanRelayAckWaitNs) {
+        static Summary from(int payloadBytes, List<Measurement> measurements) {
+            long[] samples = measurements.stream().mapToLong(Measurement::endToDecryptNs).toArray();
             long[] sorted = samples.clone();
             Arrays.sort(sorted);
             double mean = Arrays.stream(samples).average().orElseThrow();
             double variance = Arrays.stream(samples).mapToDouble(value -> (value - mean) * (value - mean))
-                    .sum() / Math.max(1, iterations - 1);
+                    .sum() / Math.max(1, samples.length - 1);
             double median = sorted.length % 2 == 0
                     ? (sorted[sorted.length / 2 - 1] / 2.0 + sorted[sorted.length / 2] / 2.0)
                     : sorted[sorted.length / 2];
             int p95Index = Math.max(0, (int) Math.ceil(sorted.length * 0.95) - 1);
             double throughput = ((double) payloadBytes / (1024.0 * 1024.0))
                     / (mean / 1_000_000_000.0);
-            return new Summary(payloadBytes, mean, median, sorted[p95Index], Math.sqrt(variance), throughput);
+            return new Summary(payloadBytes, mean, median, sorted[p95Index], Math.sqrt(variance), throughput,
+                    meanPhase(measurements, Measurement::encryptPrepareNs),
+                    meanPhase(measurements, Measurement::sendToDeliveryNs),
+                    meanPhase(measurements, Measurement::receiverDecryptNs),
+                    meanPhase(measurements, Measurement::relayAckWaitNs));
+        }
+
+        private static double meanPhase(List<Measurement> samples,
+                                        java.util.function.ToLongFunction<Measurement> phase) {
+            return samples.stream().mapToLong(phase).average().orElse(0);
         }
     }
 }

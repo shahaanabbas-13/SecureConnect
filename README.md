@@ -185,7 +185,7 @@ The command sends 1 KB, 10 KB, 100 KB, and 1 MB messages, with 10 warm-up messag
 java -jar target/secureconnect-1.0-SNAPSHOT.jar network-benchmark Alice Bob 200 127.0.0.1 5050
 ```
 
-Each run writes raw per-message timings, a summary CSV, and metadata under `experiments\results`. Measured latency starts before sender encryption and stops after the receiver authenticates and decrypts the delivered message. It includes TLS socket I/O, loopback TCP, relay routing, and both clients' message cryptography; account login, TLS connection setup, X25519/Ed25519 session establishment, and warm-up messages are excluded. The benchmark is restricted to loopback and requires both accounts to be available for its duration.
+Each run writes raw per-message timings, a summary CSV, and metadata under `experiments\results`. Measured latency starts before sender encryption and stops after the receiver authenticates and decrypts the delivered message. It includes TLS socket I/O, loopback TCP, relay routing, and both clients' message cryptography; account login, TLS connection setup, X25519/Ed25519 session establishment, per-message audit append time, and warm-up messages are excluded. The raw CSV now separates sender encryption/encoding, send-to-delivery, receiver decode/decrypt, total send-to-decrypt, and post-decrypt acknowledgement wait. The relay sends `SENT` only after the audit append, and the benchmark waits for that acknowledgement after stopping the timer to keep audit I/O from overlapping the next sample. The benchmark is restricted to loopback and requires both accounts to be available for its duration.
 
 ### Message-layer security-control trials
 

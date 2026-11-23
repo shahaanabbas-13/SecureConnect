@@ -305,14 +305,15 @@ public final class RelayServer {
         try {
             recipient.send("DELIVER\t" + sender.username + "\t" + sequence + "\t"
                     + keyVersion + "\t" + encodedEnvelope);
-            sender.send("SENT\t" + recipientName);
-            SecurityEventLog.record("MESSAGE_ROUTED", Severity.INFO, sender.username,
-                    "Encrypted message envelope routed to " + recipientName + " (sequence " + sequence + ").");
         } catch (IOException exception) {
             SecurityEventLog.record("MESSAGE_REJECTED", Severity.WARNING, sender.username,
                     "Message could not be delivered to the active recipient connection.");
             sender.send("ERROR\tCould not deliver message to " + recipientName + ".");
+            return;
         }
+        SecurityEventLog.record("MESSAGE_ROUTED", Severity.INFO, sender.username,
+                "Encrypted message envelope routed to " + recipientName + " (sequence " + sequence + ").");
+        sender.send("SENT\t" + recipientName);
     }
 
     private static final class ClientConnection {

@@ -59,6 +59,29 @@ Aggregate CSV (ignored by Git): `experiments/results/secureconnect-aggregate-202
 
 These trials exercise local cryptographic and sequence-validation code. They do not pass attacks through a live TLS relay, test account controls, or estimate attack success rates under independent network conditions. Repeated loop iterations are not substitutes for independent experiments or an external security review.
 
+## First live TLS relay benchmark (preliminary)
+
+- Run ID: `20261123-114408-66ca52ae`
+- Accounts: Alice to Bob on the loopback TLS relay
+- Settings: 100 measured samples and 10 warm-ups per payload
+- Latency summary: 1 KB mean/median/p95 = 1.077/0.954/1.872 ms; 10 KB = 1.295/1.267/1.794 ms; 100 KB = 38.095/3.795/314.854 ms; 1 MB = 31.094/26.983/34.390 ms.
+- Raw data had 11 samples above 300 ms for 100 KB and one such sample for 1 MB.
+
+Do not use this run for final performance conclusions. Inspection found that the relay sent `SENT` before appending the per-message audit event. The relay now appends the audit event before sending `SENT`, and the benchmark waits for that acknowledgement between samples. This prevents that append from overlapping the next sample's timed interval.
+
+Local artifact files (ignored by Git): `experiments/results/secureconnect-network-20261123-114408-66ca52ae-{raw,summary}.csv` and `-metadata.txt`.
+
+## Second live TLS relay benchmark (still preliminary)
+
+- Run ID: `20261123-114915-9359b0ed`
+- Same account pair and settings as the first run
+- Latency mean/median/p95: 1 KB = 0.909/0.775/1.576 ms; 10 KB = 1.315/1.220/1.843 ms; 100 KB = 41.555/3.976/315.653 ms; 1 MB = 27.608/26.931/31.192 ms.
+- Raw data again had 11/100 100 KB samples above 300 ms, with a maximum of 627.543 ms; one 1 MB sample reached 355.085 ms.
+
+The audit-write ordering change did not remove these long pauses, so the first diagnosis was incomplete. The benchmark now records stage timings for sender encryption/encoding, send-to-delivery, receiver decode/decrypt, total send-to-decrypt, and the post-decrypt relay acknowledgement wait. Capture a new run with this version and inspect the raw stage timings to locate where pauses occur before drawing conclusions. The summary for this second run predates those stage columns and remains preliminary.
+
+Local artifact files (ignored by Git): `experiments/results/secureconnect-network-20261123-114915-9359b0ed-{raw,summary}.csv` and `-metadata.txt`.
+
 ## Next measurement step
 
 Repeat the microbenchmark in at least five fresh JVM runs on the same machine, retaining every raw CSV and metadata file. Aggregate the matching summary CSVs with `benchmark-aggregate`; it reports mean latency across run means, between-run sample standard deviation, min/max run means, and the average per-run median and p95. Keep the 500-trial security-control result as a deterministic implementation check and separately record live localhost proxy demonstrations for tamper and replay behavior.
