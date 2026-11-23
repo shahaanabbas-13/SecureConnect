@@ -404,18 +404,13 @@ public final class SecureChatDesktop {
             } else {
                 command.addAll(List.of("5051", host, Integer.toString(port)));
                 builder = new ProcessBuilder(command);
-                relayPortField.setText("5051");
-                addAttackOutput("Starting " + mode + " proxy on localhost:5051 → " + host + ":" + port + ". Log in through port 5051 to route chat traffic through this simulation.");
+                addAttackOutput("Starting " + mode + " proxy on localhost:5051 → " + host + ":" + port + ". Your current session stays connected until the proxy confirms it is listening.");
             }
             builder.redirectErrorStream(true);
             attackProcess = builder.start();
             Process launched = attackProcess;
             Thread reader = new Thread(() -> readProcessOutput(launched, attackOutput, "[ATTACK LAB] "), "secureconnect-attack-ui-output");
             reader.setDaemon(true); reader.start();
-            if (!"dos".equals(mode) && authenticated) {
-                inputQueue.offer("/logout");
-                addAttackOutput("Closing the current direct session. Return to login and reconnect; the relay port is now set to 5051.");
-            }
             if ("dos".equals(mode)) addActivity("ATTACK", "Started bounded localhost DoS baseline.");
             else addActivity("ATTACK", "Started local " + mode + " proxy on port 5051.");
         } catch (IOException exception) { addAttackOutput("Could not start the simulation: " + safeMessage(exception)); }
@@ -460,7 +455,17 @@ public final class SecureChatDesktop {
 
     private void readProcessOutput(Process process, JTextArea target, String prefix) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
-            String line; while ((line = reader.readLine()) != null) { String output = prefix + line; runOnUi(() -> appendArea(target, output)); }
+            String line; while ((line = reader.readLine()) != null) {
+                String output = prefix + line;
+                if (target == attackOutput && line.startsWith("[PROXY_READY]")) {
+                    runOnUi(() -> {
+                        appendArea(target, output);
+                        relayPortField.setText("5051");
+                        addAttackOutput("Proxy is listening. The current direct session will now close; reconnect both users through port 5051.");
+                        if (authenticated) inputQueue.offer("/logout");
+                    });
+                } else runOnUi(() -> appendArea(target, output));
+            }
             int exit = process.waitFor(); runOnUi(() -> { appendArea(target, "Process exited with code " + exit + "."); if (target == evaluationSummary) refreshEvaluation(); });
         } catch (IOException exception) { runOnUi(() -> appendArea(target, "Output stream ended: " + safeMessage(exception))); }
         catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
