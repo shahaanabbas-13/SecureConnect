@@ -135,7 +135,7 @@ public final class NetworkBenchmarkRunner {
             }
             writeSummary(summaryPath, runId, iterations, summaries);
             writeMetadata(metadataPath, runId, senderName, receiverName, host, port, iterations);
-        } catch (IOException | RuntimeException exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             Files.deleteIfExists(rawPath);
             Files.deleteIfExists(summaryPath);
             Files.deleteIfExists(metadataPath);
