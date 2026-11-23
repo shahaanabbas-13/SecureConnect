@@ -82,6 +82,71 @@ The audit-write ordering change did not remove these long pauses, so the first d
 
 Local artifact files (ignored by Git): `experiments/results/secureconnect-network-20261123-114915-9359b0ed-{raw,summary}.csv` and `-metadata.txt`.
 
+## Third live TLS relay benchmark (stage timing; preliminary)
+
+- Run ID: `20261123-120632-e5860a36`
+- Settings: 100 measured samples and 10 warm-ups per payload
+- 100 KB end-to-end latency: mean 37.751 ms, median 3.482 ms, p95 308.828 ms.
+- Mean stages at 100 KB: sender encrypt/encode 0.535 ms; send-to-delivery 36.009 ms; receiver decode/decrypt 1.207 ms; post-delivery acknowledgement wait 0.022 ms.
+- In raw samples, 9/100 send-to-delivery intervals exceeded 100 ms; the maximum was 625.135 ms. For 1 MB, the maximum send-to-delivery interval was 31.830 ms and no sample exceeded 100 ms.
+
+This locates the 100 KB outliers before Bob receives the delivery frame; they are not explained by the sender's cryptographic work, Bob's decrypt, or the audit acknowledgement. It does not yet separate the sender's socket write from waiting for the delivery. The benchmark now records those as separate raw columns; collect another run with the current build before attributing the stalls to a particular network or relay operation.
+
+Local artifacts (ignored by Git): `experiments/results/secureconnect-network-20261123-120632-e5860a36-{raw,summary}.csv` and `-metadata.txt`.
+
+## Fourth live TLS relay benchmark (split socket stages; preliminary)
+
+- Run ID: `20261123-122716-cd55d09c`
+- Settings: 100 measured samples and 10 warm-ups per payload
+- 100 KB end-to-end latency: mean 28.795 ms, median 3.469 ms, p95 314.276 ms.
+- Mean 100 KB phases: sender encrypt/encode 0.549 ms; sender socket write/flush 9.816 ms; wait for delivery 17.261 ms; receiver decode/decrypt 1.168 ms; post-decrypt acknowledgement 0.023 ms.
+- The raw data had 3 socket writes over 100 ms and 5 delivery waits over 100 ms; those 8 slow samples account for the high end-to-end tail. Neither sender cryptography nor receiver decryption had a sample above 100 ms.
+- At 1 MB the end-to-end median was 27.431 ms and p95 30.397 ms; no phase exceeded 100 ms.
+
+The 100 KB stalls appear in both the sender socket write and the wait for delivery, while receiver cryptography and audit acknowledgement remain short. This locates the delay in the TLS/TCP send-and-delivery path but does not identify whether the cause is runtime pauses, OS scheduling, socket behavior, or relay processing. Keep the run preliminary until controlled diagnostics distinguish those possibilities.
+
+Local artifacts (ignored by Git): `experiments/results/secureconnect-network-20261123-122716-cd55d09c-{raw,summary}.csv` and `-metadata.txt`.
+
+## Fifth live TLS relay benchmark (GC diagnostic attempt; preliminary)
+
+- Run ID: `20261123-135945-275c021a`
+- Settings: 100 measured samples and 10 warm-ups per payload; Alice to Bob over the local TLS relay.
+- Latency mean/median/p95: 1 KB = 1.534/1.320/2.521 ms; 10 KB = 2.367/2.327/3.425 ms; 100 KB = 30.810/5.654/316.229 ms; 1 MB = 38.837/36.582/51.694 ms.
+- At 100 KB, phase means were sender encryption/encoding 0.784 ms, socket write 10.047 ms, wait for delivery 18.114 ms, receiver decode/decrypt 1.865 ms, and post-decrypt acknowledgement wait 0.050 ms.
+- The 100 KB tail remains concentrated in socket write and delivery wait. The 1 MB mean increased compared with the prior run, demonstrating run-to-run variability; do not interpret an individual run as a stable performance estimate.
+
+The attempted GC option was `-Xlog:gc*:time,uptime,level,tags`. The JVM warned that it could not rename a file named `time,uptime,level,tags`; therefore this run has no usable GC diagnostic evidence. Correct syntax uses an explicit output file, for example `-Xlog:gc*:file=experiments/results/relay-gc.log:time,uptime,level,tags`, with separate files for relay and benchmark processes. Keep this run's measurements as a valid benchmark run; classify the GC logging attempt as failed.
+
+Artifacts (ignored by Git): `experiments/results/secureconnect-network-20261123-135945-275c021a-{raw,summary}.csv` and `-metadata.txt`.
+
+## Initial network benchmark aggregation (two runs; preliminary)
+
+- Aggregate ID: `20261123-145739-83eb4c49`
+- Source runs: `20261123-122716-cd55d09c` and `20261123-135945-275c021a`, each with 100 measured samples and 10 warm-ups per payload.
+- The aggregate calculates the average of each run's mean and the sample standard deviation across the two run means. It also reports average per-run medians and p95 values. These two runs are an initial diagnostic pair, not enough independent runs for a strong performance estimate.
+
+| Payload | Mean of run means ± between-run SD (ms) | Mean run median (ms) | Mean run p95 (ms) |
+|---|---:|---:|---:|
+| 1 KB | 1.101 ± 0.612 | 0.967 | 1.800 |
+| 10 KB | 1.703 ± 0.938 | 1.709 | 2.475 |
+| 100 KB | 29.802 ± 1.425 | 4.561 | 315.252 |
+| 1 MB | 33.332 ± 7.785 | 32.007 | 41.046 |
+
+At 100 KB, per-run p95 remains much higher than the median despite similar run means. The live relay path therefore has a heavy tail in both runs; aggregate charts make that comparison visible but do not explain its cause. Continue collecting identical runs and use process-specific GC logs or other diagnostics before attributing the pauses.
+
+Artifacts (ignored by Git): `experiments/results/secureconnect-network-aggregate-20261123-145739-83eb4c49.csv`, `-latency.png`, and `-phases.png`.
+
+## GC diagnostic network benchmark (benchmark process only)
+
+- Run ID: `20261123-152421-bc7379ac`
+- Settings: 100 measured samples and 10 warm-ups per payload. The benchmark JVM used `-Xlog:gc*:file=experiments/results/benchmark-gc.log:time,uptime,level,tags`; the relay process was not started with GC logging.
+- Its GC log contains 39 stop-the-world pause entries totaling 70.402 ms. The longest was 4.735 ms; none exceeded 10 ms.
+- 100 KB mean/median/p95 was 27.515/5.441/310.369 ms. Seven of 100 samples exceeded 100 ms. The largest samples were split between sender socket writes (up to 313.21 ms) and waiting for delivery (up to 318.46 ms).
+
+No benchmark-process stop-the-world pause was long enough to explain the roughly 300 ms message delays. Raw CSV samples do not contain wall-clock timestamps, so individual pauses cannot be paired to sample indices exactly. Because the relay JVM was not logged, this diagnostic cannot rule out a relay pause. Keep this GC-instrumented run separate from the uninstrumented performance aggregate.
+
+Artifacts (ignored by Git): `experiments/results/secureconnect-network-20261123-152421-bc7379ac-{raw,summary}.csv`, `-metadata.txt`, and `benchmark-gc.log`.
+
 ## Next measurement step
 
-Repeat the microbenchmark in at least five fresh JVM runs on the same machine, retaining every raw CSV and metadata file. Aggregate the matching summary CSVs with `benchmark-aggregate`; it reports mean latency across run means, between-run sample standard deviation, min/max run means, and the average per-run median and p95. Keep the 500-trial security-control result as a deterministic implementation check and separately record live localhost proxy demonstrations for tamper and replay behavior.
+Repeat the live TLS benchmark in at least five fresh JVM runs with the same server/client configuration, payload sizes, sample counts, and warm-up counts. Aggregate those summaries with `network-benchmark-aggregate`; it reports mean latency across run means, between-run sample standard deviation, min/max run means, mean per-run median and p95, throughput, and phase means, and creates latency and phase charts. Use the corrected GC logging option for both relay and benchmark processes if diagnosing collection pauses. Keep the 500-trial security-control result as a deterministic implementation check and separately record live localhost proxy demonstrations for tamper and replay behavior.

@@ -17,10 +17,24 @@ import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.Base64;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Console chat client with signed ephemeral X25519 key establishment. */
 public final class ChatClient {
+    public interface Listener {
+        default void onAuthenticated(String username) { }
+        default void onStatus(String message) { }
+        default void onSessionReady(String peer) { }
+        default void onKeyVersion(long version) { }
+        default void onOutgoing(String plaintext, String envelope, long sequence, long keyVersion) { }
+        default void onDelivered(String peer, long sequence) { }
+        default void onIncoming(String sender, String plaintext, String envelope, long sequence, long keyVersion) { }
+        default void onSecurity(String message) { }
+        default void onDisconnected() { }
+    }
+
+    private static final Listener NO_LISTENER = new Listener() { };
     private final String host;
     private final int port;
     private final String username;
@@ -28,15 +42,24 @@ public final class ChatClient {
     private final SSLContext tlsContext;
     private final ClientConsole console;
     private final PublicKey trustedPeerSigningKey;
+    private final Listener listener;
     private final SessionKeyExchange.LocalSession localSession;
     private volatile MessageKeySchedule keySchedule;
     private final AtomicLong nextOutgoingSequence = new AtomicLong(1);
+    private final ConcurrentLinkedQueue<Long> pendingDeliveryAcks = new ConcurrentLinkedQueue<>();
     private IncomingSequenceGuard incomingSequenceGuard = new IncomingSequenceGuard();
     private long lastAnnouncedOutgoingVersion = -1;
 
     public ChatClient(String host, int port, String username, String peerUsername,
                       PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey,
                       SSLContext tlsContext, ClientConsole console) {
+        this(host, port, username, peerUsername, identityPrivateKey, trustedPeerSigningKey,
+                tlsContext, console, NO_LISTENER);
+    }
+
+    public ChatClient(String host, int port, String username, String peerUsername,
+                      PrivateKey identityPrivateKey, PublicKey trustedPeerSigningKey,
+                      SSLContext tlsContext, ClientConsole console, Listener listener) {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("host cannot be empty");
         }
@@ -57,20 +80,21 @@ public final class ChatClient {
         this.trustedPeerSigningKey = trustedPeerSigningKey;
         this.tlsContext = tlsContext;
         this.console = console;
+        this.listener = listener == null ? NO_LISTENER : listener;
         this.localSession = SessionKeyExchange.start(username, identityPrivateKey);
     }
 
     public void run() throws IOException {
         String action = console.readLine("Account action (register/login): ");
         if (action == null || !(action.equalsIgnoreCase("register") || action.equalsIgnoreCase("login"))) {
-            System.out.println("Account action must be register or login.");
+            console.println("Account action must be register or login.");
             return;
         }
         String passwordPrompt = action.equalsIgnoreCase("register")
                 ? "Password (minimum 12 characters): " : "Password: ";
         char[] password = console.readPassword(passwordPrompt);
         if (password == null) {
-            System.out.println("No password was provided.");
+            console.println("No password was provided.");
             return;
         }
         if (action.equalsIgnoreCase("register")) {
@@ -78,7 +102,7 @@ public final class ChatClient {
             if (!java.util.Arrays.equals(password, confirmation)) {
                 java.util.Arrays.fill(password, '\0');
                 if (confirmation != null) java.util.Arrays.fill(confirmation, '\0');
-                System.out.println("Passwords did not match.");
+                console.println("Passwords did not match.");
                 return;
             }
             if (confirmation != null) java.util.Arrays.fill(confirmation, '\0');
@@ -104,7 +128,8 @@ public final class ChatClient {
             if (welcome == null || welcome.startsWith("AUTH_ERROR\t")) {
                 String message = welcome == null ? "Relay closed the TLS connection."
                         : welcome.substring("AUTH_ERROR\t".length());
-                System.out.println(message);
+                console.println(message);
+                listener.onStatus(message);
                 return;
             }
             if (!welcome.equals("AUTH_OK\t" + username)) {
@@ -115,10 +140,12 @@ public final class ChatClient {
             serverOutput.newLine();
             serverOutput.flush();
 
-            System.out.println("Authenticated over TLS as " + username + ".");
-            System.out.println("This account session is bound to this TLS connection.");
-            System.out.println("Waiting for " + peerUsername + " to establish an authenticated session.");
-            System.out.println("Send with: /to " + peerUsername + " <message>    Exit with: /logout");
+            console.println("Authenticated over TLS as " + username + ".");
+            console.println("This account session is bound to this TLS connection.");
+            console.println("Waiting for " + peerUsername + " to establish an authenticated session.");
+            console.println("Send with: /to " + peerUsername + " <message>    Exit with: /logout");
+            listener.onAuthenticated(username);
+            listener.onStatus("TLS authenticated; waiting for signed peer key exchange.");
 
             Thread receiver = new Thread(() -> receiveMessages(serverInput), "secureconnect-receiver");
             receiver.setDaemon(true);
@@ -134,8 +161,13 @@ public final class ChatClient {
                     }
                     sendMessage(serverOutput, input);
             }
+        } finally {
+            MessageKeySchedule previous = keySchedule;
+            keySchedule = null;
+            if (previous != null) previous.clear();
+            listener.onDisconnected();
         }
-        System.out.println("Disconnected.");
+        console.println("Disconnected.");
     }
 
     private static String encodePassword(char[] password) {
@@ -153,22 +185,23 @@ public final class ChatClient {
 
     private void sendMessage(BufferedWriter serverOutput, String input) throws IOException {
         if (!input.regionMatches(true, 0, "/to ", 0, 4)) {
-            System.out.println("Use /to " + peerUsername + " <message> or /quit.");
+            console.println("Use /to " + peerUsername + " <message> or /quit.");
             return;
         }
         int recipientEnd = input.indexOf(' ', 4);
         if (recipientEnd < 0 || !peerUsername.equalsIgnoreCase(input.substring(4, recipientEnd))) {
-            System.out.println("Use /to " + peerUsername + " <message> or /quit.");
+            console.println("Use /to " + peerUsername + " <message> or /quit.");
             return;
         }
         String message = input.substring(recipientEnd + 1);
         if (message.isBlank()) {
-            System.out.println("Message cannot be empty.");
+            console.println("Message cannot be empty.");
             return;
         }
         MessageKeySchedule activeSchedule = keySchedule;
         if (activeSchedule == null) {
-            System.out.println("Secure session is not ready; message was not sent.");
+            console.println("Secure session is not ready; message was not sent.");
+            listener.onStatus("Message blocked: authenticated end-to-end session is not ready.");
             return;
         }
 
@@ -177,14 +210,22 @@ public final class ChatClient {
         String encryptedMessage = activeSchedule.encrypt(message, sequence);
         String encodedEnvelope = Base64.getEncoder().encodeToString(
                 encryptedMessage.getBytes(StandardCharsets.UTF_8));
-        serverOutput.write("SEND\t" + peerUsername + "\t" + sequence + "\t"
-                + keyVersion + "\t" + encodedEnvelope);
-        serverOutput.newLine();
-        serverOutput.flush();
+        pendingDeliveryAcks.add(sequence);
+        try {
+            serverOutput.write("SEND\t" + peerUsername + "\t" + sequence + "\t"
+                    + keyVersion + "\t" + encodedEnvelope);
+            serverOutput.newLine();
+            serverOutput.flush();
+        } catch (IOException exception) {
+            pendingDeliveryAcks.remove(sequence);
+            throw exception;
+        }
         nextOutgoingSequence.incrementAndGet();
+        listener.onOutgoing(message, encryptedMessage, sequence, keyVersion);
         if (keyVersion != lastAnnouncedOutgoingVersion) {
             lastAnnouncedOutgoingVersion = keyVersion;
-            System.out.println("Message key rotated to version " + keyVersion + ".");
+            console.println("Message key rotated to version " + keyVersion + ".");
+            listener.onKeyVersion(keyVersion);
         }
     }
 
@@ -207,35 +248,42 @@ public final class ChatClient {
                             lastAnnouncedOutgoingVersion = -1;
                             SecurityEventLog.record("E2EE_SESSION_CLEARED", Severity.INFO, username,
                                     "Peer disconnect cleared the local end-to-end session keys.");
-                            System.out.println("\n[SECURITY] Peer disconnected; session key cleared.");
+                            console.println("\n[SECURITY] Peer disconnected; session key cleared.");
+                            listener.onSecurity("Peer disconnected; local session key cleared.");
+                            listener.onStatus("Peer offline; waiting for a new authenticated key exchange.");
                         }
                     }
                     case "SESSION_EXPIRED" -> {
                         SecurityEventLog.record("SESSION_EXPIRED", Severity.WARNING, username,
                                 "Relay expired this connection-bound session.");
-                        System.out.println("\n[SESSION] "
+                        console.println("\n[SESSION] "
                                 + (fields.length > 1 ? fields[1] : "Session expired."));
+                        listener.onSecurity("Account session expired.");
                     }
-                    case "LOGOUT_OK" -> System.out.println("\nLogged out.");
+                    case "LOGOUT_OK" -> console.println("\nLogged out.");
                     case "DELIVER" -> handleDelivery(fields);
                     case "SENT" -> {
                         if (fields.length >= 2) {
-                            System.out.println("Message delivered to " + fields[1] + ".");
+                            console.println("Message delivered to " + fields[1] + ".");
+                            Long acknowledgedSequence = pendingDeliveryAcks.poll();
+                            listener.onDelivered(fields[1], acknowledgedSequence == null ? 0 : acknowledgedSequence);
                         }
                     }
-                    case "ERROR" -> System.out.println("Relay: "
+                    case "ERROR" -> console.println("Relay: "
                             + (fields.length > 1 ? fields[1] : "request failed"));
-                    default -> System.out.println("Relay: " + line);
+                    default -> console.println("Relay: " + line);
                 }
             }
         } catch (IOException exception) {
-            System.out.println("TLS relay connection ended: " + exception.getMessage());
+            console.println("TLS relay connection ended: " + exception.getMessage());
+            listener.onDisconnected();
         }
     }
 
     private void handlePeerKey(String[] fields) {
         if (fields.length != 5 || !peerUsername.equals(fields[1])) {
-            System.out.println("\n[SECURITY] Ignored unexpected peer key announcement.");
+            console.println("\n[SECURITY] Ignored unexpected peer key announcement.");
+            listener.onSecurity("Unexpected peer key announcement ignored.");
             return;
         }
         try {
@@ -250,7 +298,9 @@ public final class ChatClient {
             java.util.Arrays.fill(sessionKey, (byte) 0);
             nextOutgoingSequence.set(1);
             lastAnnouncedOutgoingVersion = -1;
-            System.out.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
+            console.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
+            listener.onSessionReady(peerUsername);
+            listener.onStatus("End-to-end session ready: Ed25519 verified X25519 key share; HKDF session key active.");
         } catch (IllegalArgumentException | SecurityException exception) {
             MessageKeySchedule previous = keySchedule;
             keySchedule = null;
@@ -259,18 +309,22 @@ public final class ChatClient {
             }
             SecurityEventLog.record("PEER_KEY_REJECTED", Severity.ALERT, username,
                     "Peer key announcement failed pinned identity verification.");
-            System.out.println("\n[SECURITY] Peer key rejected: " + exception.getMessage());
+            console.println("\n[SECURITY] Peer key rejected: " + exception.getMessage());
+            listener.onSecurity("Peer key rejected: " + exception.getMessage());
+            listener.onStatus("Peer key rejected; no authenticated end-to-end session is active.");
         }
     }
 
     private void handleDelivery(String[] fields) {
         if (fields.length != 5 || !peerUsername.equals(fields[1])) {
-            System.out.println("\n[SECURITY] Ignored message from an unexpected peer.");
+            console.println("\n[SECURITY] Ignored message from an unexpected peer.");
+            listener.onSecurity("Message from unexpected peer ignored.");
             return;
         }
         MessageKeySchedule activeSchedule = keySchedule;
         if (activeSchedule == null) {
-            System.out.println("\n[SECURITY] Message rejected; no authenticated session is active.");
+            console.println("\n[SECURITY] Message rejected; no authenticated session is active.");
+            listener.onSecurity("Message rejected because no authenticated E2EE session is active.");
             return;
         }
         try {
@@ -279,8 +333,9 @@ public final class ChatClient {
             if (sequence != incomingSequenceGuard.expectedSequence()) {
                 SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
                         "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
-                System.out.println("\n[SECURITY] Replayed or out-of-order message rejected (expected sequence "
+                console.println("\n[SECURITY] Replayed or out-of-order message rejected (expected sequence "
                         + incomingSequenceGuard.expectedSequence() + ", received " + sequence + ").");
+                listener.onSecurity("Replay or sequence violation rejected: received sequence " + sequence + ".");
                 return;
             }
             String encryptedMessage = new String(Base64.getDecoder().decode(fields[4]),
@@ -289,14 +344,17 @@ public final class ChatClient {
             if (!incomingSequenceGuard.accept(sequence)) {
                 SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
                         "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
-                System.out.println("\n[SECURITY] Replayed or out-of-order message rejected.");
+                console.println("\n[SECURITY] Replayed or out-of-order message rejected.");
+                listener.onSecurity("Replay or sequence violation rejected.");
                 return;
             }
-            System.out.println("\n[" + fields[1] + "]: " + message);
+            console.println("\n[" + fields[1] + "]: " + message);
+            listener.onIncoming(fields[1], message, encryptedMessage, sequence, keyVersion);
         } catch (IllegalArgumentException | SecurityException exception) {
             SecurityEventLog.record("MESSAGE_INTEGRITY_REJECTED", Severity.ALERT, username,
                     "Encrypted message envelope failed local integrity or format validation.");
-            System.out.println("\n[SECURITY] Message rejected: " + exception.getMessage());
+            console.println("\n[SECURITY] Message rejected: " + exception.getMessage());
+            listener.onSecurity("Message rejected: " + exception.getMessage());
         }
     }
 }
