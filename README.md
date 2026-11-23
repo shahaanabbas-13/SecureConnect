@@ -171,6 +171,22 @@ The aggregator rejects duplicate run IDs, incomplete/mismatched metric sets, or 
 
 Metrics are `plaintext_copy_baseline`, `protected_encrypt`, `protected_decrypt`, and `protected_round_trip`. The protected path uses the actual HKDF-derived message-key schedule and AES-256-GCM implementation. Timing includes nonce generation and per-operation cipher/key derivation. It excludes sockets, TLS, login, UI, and disk I/O. The baseline is an in-memory byte-array copy whose result is retained, not an unencrypted network transmission. Treat these as local microbenchmark measurements; they do not establish end-to-end network latency or general performance claims. Repeat runs on the same machine and report their variability before drawing conclusions.
 
+### TLS relay end-to-end delivery benchmark
+
+This benchmark logs in two existing local accounts, establishes the same signed X25519/HKDF session used by the clients, then sends encrypted messages through the running TLS relay. Keep both accounts logged out in other terminals. The command prompts for both passwords without echo when run from a terminal. The client truststore environment variables described above must be set in this terminal, and the relay must be running with its server keystore configured.
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar network-benchmark Alice Bob 100
+```
+
+The command sends 1 KB, 10 KB, 100 KB, and 1 MB messages, with 10 warm-up messages and 100 measured messages per size. It accepts a different iteration count and optional loopback host/port:
+
+```powershell
+java -jar target/secureconnect-1.0-SNAPSHOT.jar network-benchmark Alice Bob 200 127.0.0.1 5050
+```
+
+Each run writes raw per-message timings, a summary CSV, and metadata under `experiments\results`. Measured latency starts before sender encryption and stops after the receiver authenticates and decrypts the delivered message. It includes TLS socket I/O, loopback TCP, relay routing, and both clients' message cryptography; account login, TLS connection setup, X25519/Ed25519 session establishment, and warm-up messages are excluded. The benchmark is restricted to loopback and requires both accounts to be available for its duration.
+
 ### Message-layer security-control trials
 
 Run repeatable local checks of the message integrity and sequence controls used by the client:

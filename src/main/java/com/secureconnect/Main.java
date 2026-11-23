@@ -7,6 +7,7 @@ import com.secureconnect.experiments.BenchmarkRunner;
 import com.secureconnect.experiments.BenchmarkChartRenderer;
 import com.secureconnect.experiments.SecurityEvaluationRunner;
 import com.secureconnect.experiments.BenchmarkAggregator;
+import com.secureconnect.experiments.NetworkBenchmarkRunner;
 import com.secureconnect.keymanagement.IdentityKeys;
 import com.secureconnect.server.RelayServer;
 import com.secureconnect.security.TlsContexts;
@@ -39,8 +40,12 @@ public final class Main {
                 case "benchmark-chart" -> BenchmarkChartRenderer.render(args);
                 case "security-evaluation" -> SecurityEvaluationRunner.run(args);
                 case "benchmark-aggregate" -> BenchmarkAggregator.run(args);
+                case "network-benchmark" -> NetworkBenchmarkRunner.run(args);
                 default -> printUsage();
             }
+        } catch (SecurityException exception) {
+            System.err.println("SecureConnect rejected the operation: " + exception.getMessage());
+            System.exit(1);
         } catch (IllegalArgumentException exception) {
             System.err.println("Error: " + exception.getMessage());
             printUsage();
@@ -139,6 +144,7 @@ public final class Main {
         System.out.println("Benchmark charts: java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-chart <summary.csv>");
         System.out.println("Security evaluation: java -jar target/secureconnect-1.0-SNAPSHOT.jar security-evaluation [trials] [output-directory]");
         System.out.println("Aggregate benchmarks: java -jar target/secureconnect-1.0-SNAPSHOT.jar benchmark-aggregate <summary-1.csv> <summary-2.csv> [more-summary.csv ...]");
+        System.out.println("TLS relay benchmark: java -jar target/secureconnect-1.0-SNAPSHOT.jar network-benchmark <sender> <receiver> [iterations] [host] [port]");
         System.out.println("Default port: " + DEFAULT_PORT + "; default client host: 127.0.0.1");
         System.out.println("X25519 + HKDF establish session keys; Ed25519 identity keys authenticate key shares.");
         System.out.println("Trust keys must be verified out of band. Use localhost only; this is an educational protocol.");
