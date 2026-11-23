@@ -12,6 +12,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
+import java.security.SignatureException;
 import java.security.KeyFactory;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
@@ -63,7 +64,13 @@ public final class SessionKeyExchange {
             Signature verifier = Signature.getInstance("Ed25519");
             verifier.initVerify(trustedPeerSigningKey);
             verifier.update(canonical(peerUsername, peerSessionId64, peerEphemeralPublic64));
-            if (!verifier.verify(signatureBytes)) {
+            final boolean signatureValid;
+            try {
+                signatureValid = verifier.verify(signatureBytes);
+            } catch (SignatureException exception) {
+                throw new SecurityException("peer key signature was malformed or invalid", exception);
+            }
+            if (!signatureValid) {
                 throw new SecurityException("peer key signature did not match the pinned identity key");
             }
 

@@ -26,10 +26,21 @@ public final class ChatClient {
         default void onAuthenticated(String username) { }
         default void onStatus(String message) { }
         default void onSessionReady(String peer) { }
+        default void onSessionReady(String peer, String localSessionId, String peerSessionId) {
+            onSessionReady(peer);
+        }
         default void onKeyVersion(long version) { }
         default void onOutgoing(String plaintext, String envelope, long sequence, long keyVersion) { }
+        default void onOutgoingMeasured(String plaintext, String envelope, long sequence, long keyVersion,
+                                        long encryptionNanos) {
+            onOutgoing(plaintext, envelope, sequence, keyVersion);
+        }
         default void onDelivered(String peer, long sequence) { }
         default void onIncoming(String sender, String plaintext, String envelope, long sequence, long keyVersion) { }
+        default void onIncomingMeasured(String sender, String plaintext, String envelope, long sequence,
+                                        long keyVersion, long decryptionNanos) {
+            onIncoming(sender, plaintext, envelope, sequence, keyVersion);
+        }
         default void onSecurity(String message) { }
         default void onDisconnected() { }
     }
@@ -207,7 +218,11 @@ public final class ChatClient {
 
         long sequence = nextOutgoingSequence.get();
         long keyVersion = activeSchedule.keyVersionFor(sequence);
+        long encryptionStarted = System.nanoTime();
         String encryptedMessage = activeSchedule.encrypt(message, sequence);
+        long encryptionNanos = System.nanoTime() - encryptionStarted;
+        console.println("[CRYPTO] AES-256-GCM encryption succeeded (sequence=" + sequence
+                + ", keyEpoch=" + keyVersion + ", elapsed=" + String.format(java.util.Locale.ROOT, "%.3f", encryptionNanos / 1_000.0) + " µs).");
         String encodedEnvelope = Base64.getEncoder().encodeToString(
                 encryptedMessage.getBytes(StandardCharsets.UTF_8));
         pendingDeliveryAcks.add(sequence);
@@ -221,7 +236,9 @@ public final class ChatClient {
             throw exception;
         }
         nextOutgoingSequence.incrementAndGet();
-        listener.onOutgoing(message, encryptedMessage, sequence, keyVersion);
+        console.println("[NETWORK] Encrypted SC1 envelope sent to relay (sequence=" + sequence
+                + ", encodedBytes=" + encryptedMessage.getBytes(StandardCharsets.UTF_8).length + ").");
+        listener.onOutgoingMeasured(message, encryptedMessage, sequence, keyVersion, encryptionNanos);
         if (keyVersion != lastAnnouncedOutgoingVersion) {
             lastAnnouncedOutgoingVersion = keyVersion;
             console.println("Message key rotated to version " + keyVersion + ".");
@@ -299,7 +316,7 @@ public final class ChatClient {
             nextOutgoingSequence.set(1);
             lastAnnouncedOutgoingVersion = -1;
             console.println("\nAuthenticated encrypted session established with " + peerUsername + ".");
-            listener.onSessionReady(peerUsername);
+            listener.onSessionReady(peerUsername, localSession.sessionIdBase64(), fields[2]);
             listener.onStatus("End-to-end session ready: Ed25519 verified X25519 key share; HKDF session key active.");
         } catch (IllegalArgumentException | SecurityException exception) {
             MessageKeySchedule previous = keySchedule;
@@ -340,7 +357,11 @@ public final class ChatClient {
             }
             String encryptedMessage = new String(Base64.getDecoder().decode(fields[4]),
                     StandardCharsets.UTF_8);
+            console.println("[RECEIVER] Encrypted envelope received (sequence=" + sequence
+                    + ", keyEpoch=" + keyVersion + ", encodedBytes=" + encryptedMessage.getBytes(StandardCharsets.UTF_8).length + ").");
+            long decryptionStarted = System.nanoTime();
             String message = activeSchedule.decrypt(encryptedMessage, fields[1], sequence, keyVersion);
+            long decryptionNanos = System.nanoTime() - decryptionStarted;
             if (!incomingSequenceGuard.accept(sequence)) {
                 SecurityEventLog.record("REPLAY_REJECTED", Severity.ALERT, username,
                         "Rejected duplicate or out-of-order encrypted message sequence " + sequence + ".");
@@ -348,8 +369,12 @@ public final class ChatClient {
                 listener.onSecurity("Replay or sequence violation rejected.");
                 return;
             }
+            console.println("[SECURITY] AES-GCM authentication tag verified; sequence " + sequence + " accepted.");
+            console.println("[CRYPTO] Local decryption succeeded (elapsed="
+                    + String.format(java.util.Locale.ROOT, "%.3f", decryptionNanos / 1_000.0) + " µs).");
             console.println("\n[" + fields[1] + "]: " + message);
-            listener.onIncoming(fields[1], message, encryptedMessage, sequence, keyVersion);
+            listener.onIncomingMeasured(fields[1], message, encryptedMessage, sequence, keyVersion,
+                    decryptionNanos);
         } catch (IllegalArgumentException | SecurityException exception) {
             SecurityEventLog.record("MESSAGE_INTEGRITY_REJECTED", Severity.ALERT, username,
                     "Encrypted message envelope failed local integrity or format validation.");

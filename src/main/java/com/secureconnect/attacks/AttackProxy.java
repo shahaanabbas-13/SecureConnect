@@ -64,6 +64,7 @@ public final class AttackProxy {
         SSLServerSocket tlsListener = (SSLServerSocket) proxyTlsContext.getServerSocketFactory()
                 .createServerSocket(listenPort, 50, loopback);
         tlsListener.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
+        System.out.println("[PROXY_READY] listening on " + loopback.getHostAddress() + ":" + listenPort);
         try (SSLServerSocket listener = tlsListener) {
             System.out.println("Attack proxy mode: " + mode.commandName);
             System.out.println("Clients connect to " + loopback.getHostAddress() + ":" + listenPort
