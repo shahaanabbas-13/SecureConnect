@@ -22,6 +22,10 @@ import javax.swing.JToggleButton;
 import javax.swing.JTabbedPane;
 import javax.swing.JFileChooser;
 import javax.swing.JSplitPane;
+import javax.swing.JComponent;
+import javax.swing.plaf.basic.BasicButtonUI;
+import javax.swing.plaf.basic.BasicComboBoxUI;
+import javax.swing.plaf.basic.BasicTabbedPaneUI;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.UIManager;
@@ -30,9 +34,14 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.Component;
+import java.awt.Graphics;
+import java.awt.Insets;
 import java.awt.GridLayout;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.IOException;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -41,6 +50,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.PublicKey;
 import java.time.LocalTime;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.ArrayList;
@@ -62,7 +72,7 @@ public final class SecureChatDesktop {
     private static final Color SIDEBAR = new Color(247, 249, 247);
     private static final Color GREEN = new Color(0, 128, 105);
     private static final Color DEEP_GREEN = new Color(0, 104, 86);
-    private static final Color CHAT_BG = new Color(232, 223, 211);
+    private static final Color CHAT_BG = new Color(237, 243, 244);
     private static final Color TEXT = new Color(31, 45, 48);
     private static final Color MUTED = new Color(105, 121, 123);
     private static final Color LINE = new Color(218, 225, 221);
@@ -91,9 +101,12 @@ public final class SecureChatDesktop {
     private final JLabel pinState = new JLabel("Peer signature: waiting");
     private final JLabel relayState = new JLabel("Relay visibility: encrypted envelope only");
     private final JPanel messageList = new JPanel();
+    private boolean hasConversationMessages;
     private final JTextArea composer = new JTextArea(3, 40);
     private final JButton sendButton = new JButton("Send");
     private final JButton connectButton = new JButton("Connect securely");
+    private final JButton themeToggle = new JButton("Dark mode");
+    private final JTabbedPane views = new JTabbedPane();
     private final JTextArea activityList = new JTextArea();
     private final JTextArea cryptoTrace = readOnlyArea();
     private final JTextArea packetMonitor = readOnlyArea();
@@ -103,6 +116,14 @@ public final class SecureChatDesktop {
     private final JComboBox<String> artifactSelect = new JComboBox<>();
     private final Map<String, Path> exportArtifacts = new java.util.LinkedHashMap<>();
     private final JLabel keysOverview = new JLabel();
+    private final JLabel networkStage = new JLabel("● Sender     ○ Relay     ○ Recipient");
+    private final JLabel attackExpected = new JLabel("Expected outcome: —");
+    private final JLabel attackObserved = new JLabel("Observed outcome: —");
+    private final JLabel attackDisposition = new JLabel("Status: idle");
+    private final JPanel securityInspector = new JPanel(new BorderLayout(0, 12));
+    private final JButton inspectorToggle = new JButton("Hide inspector");
+    private final JTextArea selectedMessageDetails = readOnlyArea();
+    private final Map<String, String> messageSecurityDetails = new HashMap<>();
     private final JPanel latencyChart = new JPanel() {
         @Override protected void paintComponent(java.awt.Graphics graphics) {
             super.paintComponent(graphics);
@@ -111,10 +132,18 @@ public final class SecureChatDesktop {
     };
     private final List<PerformancePoint> performancePoints = new ArrayList<>();
     private volatile Process attackProcess;
+    private volatile Instant attackStartedAt;
+    private volatile String activeAttackMode;
+    private boolean darkMode;
+    private int networkAnimationStep;
+    private boolean inboundAnimation;
+    private final Timer networkAnimation = new Timer(420, event -> advanceNetworkAnimation());
     private final ArrayDeque<String> activityLines = new ArrayDeque<>();
     private final Set<String> seenAuditEvents = new HashSet<>();
     private final Map<Long, JLabel> pendingMessageTitles = new HashMap<>();
     private final Set<Long> earlyRelayAcks = new HashSet<>();
+    private final Set<Long> outgoingUiSequences = new HashSet<>();
+    private final Set<Long> earlyNetworkAcks = new HashSet<>();
     private final BlockingQueue<String> inputQueue = new LinkedBlockingQueue<>();
     private volatile ChatClient client;
     private volatile boolean authenticated;
@@ -165,6 +194,7 @@ public final class SecureChatDesktop {
         frame.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
                 eventTimer.stop();
+                networkAnimation.stop();
                 if (authenticated) inputQueue.offer("/logout");
                 Process lab = attackProcess;
                 if (lab != null && lab.isAlive()) lab.destroy();
@@ -187,39 +217,89 @@ public final class SecureChatDesktop {
 
     private JPanel buildLoginPage() {
         JPanel outer = new JPanel(new GridBagLayoutCompat());
-        outer.setBackground(new Color(237, 242, 239));
+        outer.setBackground(new Color(238, 244, 241));
+        JPanel layout = new JPanel(new BorderLayout(28, 0));
+        layout.setOpaque(false);
+        layout.setBorder(new EmptyBorder(22, 30, 22, 30));
+        layout.setPreferredSize(new Dimension(1080, 790));
+
+        JPanel intro = new JPanel();
+        intro.setLayout(new BoxLayout(intro, BoxLayout.Y_AXIS));
+        intro.setBackground(new Color(20, 72, 63));
+        intro.setBorder(new EmptyBorder(34, 30, 30, 30));
+        intro.setPreferredSize(new Dimension(330, 720));
+        JLabel introLogo = new JLabel("SC");
+        introLogo.setOpaque(true); introLogo.setBackground(new Color(42, 151, 127)); introLogo.setForeground(Color.WHITE);
+        introLogo.setHorizontalAlignment(JLabel.CENTER); introLogo.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 20));
+        introLogo.setPreferredSize(new Dimension(50, 50)); introLogo.setMaximumSize(new Dimension(50, 50));
+        intro.add(introLogo); addGap(intro, 34);
+        JLabel eyebrow = new JLabel("SECURE MESSAGING • LOCAL DEMO");
+        eyebrow.setForeground(new Color(140, 222, 198)); eyebrow.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10));
+        intro.add(eyebrow); addGap(intro, 12);
+        JLabel introTitle = new JLabel("Private by\ndesign.");
+        introTitle.setText("<html>Private by<br>design.</html>");
+        introTitle.setForeground(Color.WHITE); introTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 32));
+        introTitle.setAlignmentX(Component.LEFT_ALIGNMENT); intro.add(introTitle); addGap(intro, 12);
+        JLabel introCopy = new JLabel("<html>Chat normally while SecureConnect shows how identity, encryption and message checks protect each delivery.</html>");
+        introCopy.setForeground(new Color(208, 229, 221)); introCopy.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
+        introCopy.setAlignmentX(Component.LEFT_ALIGNMENT); introCopy.setMaximumSize(new Dimension(260, 70)); intro.add(introCopy); addGap(intro, 28);
+        intro.add(featureLine("01", "Identity verified with Ed25519")); addGap(intro, 14);
+        intro.add(featureLine("02", "Messages sealed with AES-256-GCM")); addGap(intro, 14);
+        intro.add(featureLine("03", "Relay sees encrypted envelopes only"));
+        JPanel introFoot = new JPanel(new BorderLayout()); introFoot.setOpaque(false);
+        JLabel localOnly = new JLabel("LOCALHOST TEST ENVIRONMENT");
+        localOnly.setForeground(new Color(140, 222, 198)); localOnly.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 9));
+        introFoot.add(localOnly, BorderLayout.SOUTH); intro.add(Box.createVerticalGlue()); intro.add(introFoot);
+
         JPanel card = new JPanel();
         card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
         card.setBackground(Color.WHITE);
-        card.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE),
-                new EmptyBorder(34, 42, 34, 42)));
-        card.setPreferredSize(new Dimension(500, 700));
+        card.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(new Color(222, 231, 227)),
+                new EmptyBorder(28, 38, 26, 38)));
+        card.setPreferredSize(new Dimension(590, 720));
+        card.setMinimumSize(new Dimension(510, 680));
         JLabel logo = new JLabel("SC"); logo.setOpaque(true); logo.setBackground(GREEN); logo.setForeground(Color.WHITE);
         logo.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 21)); logo.setHorizontalAlignment(JLabel.CENTER);
-        logo.setPreferredSize(new Dimension(54, 54)); logo.setMaximumSize(new Dimension(54, 54));
-        JLabel title = heading("SecureConnect");
-        JLabel subtitle = body("A private chat demo with visible end-to-end security.");
-        addGap(card, 4); card.add(logo); addGap(card, 18); card.add(title); addGap(card, 5); card.add(subtitle); addGap(card, 28);
-        card.add(formLabel("YOUR ACCOUNT")); addGap(card, 7); styleField(usernameField); card.add(usernameField); addGap(card, 14);
-        card.add(formLabel("CHAT WITH")); addGap(card, 7); styleField(peerField); card.add(peerField); addGap(card, 14);
-        card.add(formLabel("RELAY PORT (5050 DIRECT • 5051 ATTACK PROXY)")); addGap(card, 7); styleField(relayPortField); card.add(relayPortField); addGap(card, 14);
-        card.add(formLabel("ACCOUNT ACTION")); addGap(card, 7); actionField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
-        actionField.setBackground(Color.WHITE); card.add(actionField); addGap(card, 14);
-        card.add(formLabel("PASSWORD")); addGap(card, 7); styleField(passwordField); card.add(passwordField); addGap(card, 10);
-        card.add(formLabel("CONFIRM PASSWORD (REGISTER ONLY)")); addGap(card, 7); styleField(confirmField); card.add(confirmField); addGap(card, 14);
+        logo.setPreferredSize(new Dimension(46, 46)); logo.setMaximumSize(new Dimension(46, 46));
+        JLabel formEyebrow = new JLabel("WELCOME TO SECURECONNECT"); formEyebrow.setForeground(GREEN);
+        formEyebrow.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10));
+        JLabel title = heading("Start a secure chat"); title.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 25));
+        JLabel subtitle = body("Sign in or create a local demo account to connect with a peer.");
+        addGap(card, 2); card.add(logo); addGap(card, 15); card.add(formEyebrow); addGap(card, 5); card.add(title); addGap(card, 3); card.add(subtitle); addGap(card, 18);
+        card.add(formLabel("YOUR ACCOUNT")); addGap(card, 5); styleField(usernameField); card.add(usernameField); addGap(card, 10);
+        card.add(formLabel("CHAT WITH")); addGap(card, 5); styleField(peerField); card.add(peerField); addGap(card, 10);
+        card.add(formLabel("RELAY PORT  •  5050 DIRECT / 5051 ATTACK PROXY")); addGap(card, 5); styleField(relayPortField); card.add(relayPortField); addGap(card, 10);
+        card.add(formLabel("ACCOUNT ACTION")); addGap(card, 5); actionField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        actionField.setUI(new BasicComboBoxUI()); actionField.setOpaque(true); actionField.setBackground(Color.WHITE); actionField.setForeground(TEXT);
+        actionField.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(4, 8, 4, 8)));
+        card.add(actionField); addGap(card, 10);
+        card.add(formLabel("PASSWORD")); addGap(card, 5); styleField(passwordField); card.add(passwordField); addGap(card, 10);
+        card.add(formLabel("CONFIRM PASSWORD  •  REGISTER ONLY")); addGap(card, 5); styleField(confirmField); card.add(confirmField); addGap(card, 12);
+
+        JPanel trustPanel = new JPanel(); trustPanel.setLayout(new BoxLayout(trustPanel, BoxLayout.Y_AXIS));
+        trustPanel.setBackground(new Color(244, 249, 246)); trustPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(220, 232, 226)), new EmptyBorder(9, 11, 8, 11)));
+        JLabel trustTitle = new JLabel("PEER IDENTITY CHECK"); trustTitle.setForeground(GREEN);
+        trustTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 9)); trustTitle.setAlignmentX(0f); trustPanel.add(trustTitle); addGap(trustPanel, 5);
         fingerprintLabel.setForeground(MUTED); fingerprintLabel.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11)); fingerprintLabel.setAlignmentX(0f);
-        fingerprintLabel.setMaximumSize(new Dimension(410, 52));
-        card.add(fingerprintLabel); addGap(card, 12);
-        fingerprintVerified.setOpaque(false); fingerprintVerified.setForeground(TEXT); fingerprintVerified.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11)); fingerprintVerified.setAlignmentX(0f);
-        card.add(fingerprintVerified); addGap(card, 12);
+        fingerprintLabel.setMaximumSize(new Dimension(470, 42)); trustPanel.add(fingerprintLabel); addGap(trustPanel, 5);
+        fingerprintVerified.setOpaque(false); fingerprintVerified.setForeground(TEXT); fingerprintVerified.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10)); fingerprintVerified.setAlignmentX(0f);
+        trustPanel.add(fingerprintVerified); trustPanel.setAlignmentX(0f); card.add(trustPanel); addGap(card, 12);
+        connectButton.setUI(new BasicButtonUI()); connectButton.setOpaque(true); connectButton.setContentAreaFilled(true);
         connectButton.setForeground(Color.WHITE); connectButton.setBackground(GREEN); connectButton.setFocusPainted(false);
+        connectButton.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(DEEP_GREEN), new EmptyBorder(9, 12, 9, 12)));
         connectButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14)); connectButton.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
         connectButton.addActionListener(event -> connect()); card.add(connectButton); addGap(card, 10);
-        loginStatus.setForeground(MUTED); loginStatus.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12)); loginStatus.setAlignmentX(0f); card.add(loginStatus); addGap(card, 20);
-        JLabel note = body("Local demo • TLS to relay • Ed25519-pinned X25519 session • AES-256-GCM messages");
-        note.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10)); card.add(note);
-        outer.add(card);
+        loginStatus.setForeground(MUTED); loginStatus.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11)); loginStatus.setAlignmentX(0f); card.add(loginStatus);
+        layout.add(intro, BorderLayout.WEST); layout.add(card, BorderLayout.CENTER);
+        outer.add(layout);
         return outer;
+    }
+
+    private static JLabel featureLine(String number, String text) {
+        JLabel label = new JLabel("<html><font color='#8CDEC6'><b>" + number + "</b></font>&nbsp;&nbsp; " + htmlEscape(text) + "</html>");
+        label.setForeground(new Color(226, 241, 235)); label.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        label.setAlignmentX(Component.LEFT_ALIGNMENT); return label;
     }
 
     private JPanel buildChatPage() {
@@ -229,15 +309,20 @@ public final class SecureChatDesktop {
         brand.setBorder(new EmptyBorder(18, 12, 18, 12)); left.add(brand, BorderLayout.NORTH);
         JPanel conversation = new JPanel(new BorderLayout(0, 8)); conversation.setBackground(new Color(232, 241, 236));
         conversation.setBorder(new EmptyBorder(16, 16, 16, 12));
+        JLabel chatsHeading = new JLabel("CHATS"); chatsHeading.setForeground(MUTED); chatsHeading.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10));
+        conversation.add(chatsHeading, BorderLayout.NORTH);
         JLabel avatar = new JLabel("SC"); avatar.setOpaque(true); avatar.setBackground(new Color(183, 218, 205)); avatar.setForeground(DEEP_GREEN);
         avatar.setHorizontalAlignment(JLabel.CENTER); avatar.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 16)); avatar.setPreferredSize(new Dimension(44,44));
-        JPanel contact = new JPanel(new BorderLayout(10, 0)); contact.setOpaque(false); contact.add(avatar, BorderLayout.WEST);
+        JPanel contact = new JPanel(new BorderLayout(10, 0)); contact.setBackground(Color.WHITE);
+        contact.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(10, 9, 10, 9)));
+        contact.add(avatar, BorderLayout.WEST);
         JPanel contactInfo = new JPanel(new GridLayout(2, 1)); contactInfo.setOpaque(false); peerHeader.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
         connectionLabel.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10)); connectionLabel.setForeground(MUTED); contactInfo.add(peerHeader); contactInfo.add(connectionLabel);
-        contact.add(contactInfo, BorderLayout.CENTER); conversation.add(contact, BorderLayout.NORTH);
+        contact.add(contactInfo, BorderLayout.CENTER); conversation.add(contact, BorderLayout.CENTER);
         JLabel safety = new JLabel("  🔒  Messages are encrypted end to end"); safety.setForeground(DEEP_GREEN); safety.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
         safety.setBorder(new EmptyBorder(10, 0, 8, 0)); conversation.add(safety, BorderLayout.SOUTH); left.add(conversation, BorderLayout.CENTER);
         JButton monitor = new JButton("Open security monitor"); monitor.addActionListener(event -> SecurityDashboard.launch());
+        monitor.setUI(new BasicButtonUI()); monitor.setOpaque(true); monitor.setContentAreaFilled(true);
         monitor.setFocusPainted(false); monitor.setBackground(Color.WHITE); monitor.setForeground(GREEN); monitor.setBorder(new EmptyBorder(12, 12, 12, 12));
         left.add(monitor, BorderLayout.SOUTH);
 
@@ -245,16 +330,39 @@ public final class SecureChatDesktop {
         JPanel chatHeader = new JPanel(new BorderLayout(8, 0)); chatHeader.setBackground(SIDEBAR); chatHeader.setBorder(new EmptyBorder(14, 18, 14, 18));
         JLabel chatTitle = new JLabel("Conversation"); chatTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 16)); chatTitle.setForeground(TEXT);
         JLabel tlsBadge = new JLabel("TLS 1.3/1.2  •  LOCAL RELAY"); tlsBadge.setForeground(GREEN); tlsBadge.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10));
-        chatHeader.add(chatTitle, BorderLayout.WEST); chatHeader.add(tlsBadge, BorderLayout.EAST); center.add(chatHeader, BorderLayout.NORTH);
+        themeToggle.setUI(new BasicButtonUI()); themeToggle.setOpaque(true); themeToggle.setContentAreaFilled(true);
+        themeToggle.setFocusPainted(false); themeToggle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
+        themeToggle.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(GREEN), new EmptyBorder(7, 12, 7, 12)));
+        styleThemeToggle();
+        themeToggle.addActionListener(event -> { darkMode = !darkMode; themeToggle.setText(darkMode ? "Light mode" : "Dark mode"); applyTheme(frame); });
+        inspectorToggle.setUI(new BasicButtonUI()); inspectorToggle.setOpaque(false); inspectorToggle.setContentAreaFilled(false);
+        inspectorToggle.setForeground(GREEN); inspectorToggle.setFocusPainted(false); inspectorToggle.setBorderPainted(false);
+        inspectorToggle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10));
+        inspectorToggle.addActionListener(event -> {
+            boolean show = !securityInspector.isVisible(); securityInspector.setVisible(show);
+            inspectorToggle.setText(show ? "Hide inspector" : "Show inspector"); frame.revalidate(); frame.repaint();
+        });
+        JPanel headerActions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 10, 0)); headerActions.setOpaque(false); headerActions.add(tlsBadge); headerActions.add(inspectorToggle); headerActions.add(themeToggle);
+        chatHeader.add(chatTitle, BorderLayout.WEST); chatHeader.add(headerActions, BorderLayout.EAST); center.add(chatHeader, BorderLayout.NORTH);
         messageList.setLayout(new BoxLayout(messageList, BoxLayout.Y_AXIS)); messageList.setBackground(CHAT_BG); messageList.setBorder(new EmptyBorder(16, 22, 16, 22));
+        messageList.add(buildEmptyConversationState());
         JScrollPane conversationScroll = new JScrollPane(messageList); conversationScroll.setBorder(null); conversationScroll.getViewport().setBackground(CHAT_BG);
         JPanel inputArea = new JPanel(new BorderLayout(10, 0)); inputArea.setBackground(new Color(242, 245, 242)); inputArea.setBorder(new EmptyBorder(12, 16, 12, 16));
+        JLabel composerHint = new JLabel("MESSAGE COMPOSER  •  encrypted on this device with AES-256-GCM");
+        composerHint.setForeground(MUTED); composerHint.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 9));
         composer.setLineWrap(true); composer.setWrapStyleWord(true); composer.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14)); composer.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(9, 12, 9, 12)));
-        JScrollPane composerScroll = new JScrollPane(composer); composerScroll.setBorder(null); inputArea.add(composerScroll, BorderLayout.CENTER);
+        JScrollPane composerScroll = new JScrollPane(composer); composerScroll.setBorder(null);
+        JPanel composeStack = new JPanel(new BorderLayout(0, 5)); composeStack.setOpaque(false); composeStack.add(composerHint, BorderLayout.NORTH); composeStack.add(composerScroll, BorderLayout.CENTER);
+        inputArea.add(composeStack, BorderLayout.CENTER);
+        sendButton.setUI(new BasicButtonUI()); sendButton.setOpaque(true); sendButton.setContentAreaFilled(true);
         sendButton.setForeground(Color.WHITE); sendButton.setBackground(GREEN); sendButton.setFocusPainted(false); sendButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 13));
+        sendButton.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(DEEP_GREEN), new EmptyBorder(10, 18, 10, 18)));
         sendButton.addActionListener(event -> send()); inputArea.add(sendButton, BorderLayout.EAST);
         JPanel conversationView = new JPanel(new BorderLayout()); conversationView.add(conversationScroll, BorderLayout.CENTER); conversationView.add(inputArea, BorderLayout.SOUTH);
-        JTabbedPane views = new JTabbedPane();
+        views.setUI(new ChatTabbedPaneUI());
+        views.setOpaque(true); views.setBackground(CHAT_BG); views.setForeground(TEXT);
+        views.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
+        views.setBorder(BorderFactory.createEmptyBorder());
         views.addTab("Chat", conversationView);
         views.addTab("Crypto trace", buildCryptoView());
         views.addTab("Network", buildNetworkView());
@@ -263,7 +371,7 @@ public final class SecureChatDesktop {
         views.addTab("Evaluation", buildEvaluationView());
         center.add(views, BorderLayout.CENTER);
 
-        JPanel right = new JPanel(new BorderLayout(0, 12)); right.setBackground(SIDEBAR); right.setPreferredSize(new Dimension(340, 0));
+        JPanel right = securityInspector; right.setBackground(SIDEBAR); right.setPreferredSize(new Dimension(320, 0));
         right.setBorder(new EmptyBorder(18, 16, 16, 16));
         JLabel securityTitle = new JLabel("SECURITY DETAILS"); securityTitle.setForeground(GREEN); securityTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11)); right.add(securityTitle, BorderLayout.NORTH);
         JPanel security = new JPanel(); security.setLayout(new BoxLayout(security, BoxLayout.Y_AXIS)); security.setBackground(SIDEBAR);
@@ -274,6 +382,15 @@ public final class SecureChatDesktop {
         addSecurityRow(security, "MESSAGE KEY", keyState, new Color(0, 128, 105));
         addSecurityRow(security, "REPLAY CHECK", seqState, new Color(0, 128, 105));
         addSecurityRow(security, "RELAY VIEW", relayState, new Color(0, 128, 105));
+        JLabel selectedTitle = new JLabel("SELECTED MESSAGE"); selectedTitle.setForeground(GREEN);
+        selectedTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11)); selectedTitle.setBorder(new EmptyBorder(14, 0, 2, 0));
+        selectedTitle.setAlignmentX(Component.LEFT_ALIGNMENT); security.add(selectedTitle);
+        selectedMessageDetails.setRows(8); selectedMessageDetails.setLineWrap(true); selectedMessageDetails.setWrapStyleWord(true);
+        selectedMessageDetails.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 10)); selectedMessageDetails.setForeground(TEXT);
+        selectedMessageDetails.setBackground(new Color(241, 246, 243)); selectedMessageDetails.setBorder(new EmptyBorder(8, 8, 8, 8));
+        selectedMessageDetails.setText("Select a message to inspect its actual envelope, nonce, tag, sequence and operation timing.");
+        JScrollPane messageDetailsScroll = new JScrollPane(selectedMessageDetails); messageDetailsScroll.setPreferredSize(new Dimension(260, 150));
+        messageDetailsScroll.setBorder(BorderFactory.createLineBorder(LINE)); security.add(messageDetailsScroll);
         JLabel flowTitle = new JLabel("MESSAGE JOURNEY"); flowTitle.setForeground(GREEN); flowTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
         flowTitle.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT); flowTitle.setBorder(new EmptyBorder(18, 0, 8, 0)); security.add(flowTitle);
         security.add(body("1  Compose plaintext on sender device")); addGap(security, 6);
@@ -295,6 +412,23 @@ public final class SecureChatDesktop {
         return root;
     }
 
+    private JPanel buildEmptyConversationState() {
+        JPanel outer = new JPanel(new GridBagLayoutCompat()); outer.setOpaque(false);
+        JPanel card = new JPanel(); card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBackground(new Color(247, 250, 248));
+        card.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(24, 28, 24, 28)));
+        card.setMaximumSize(new Dimension(460, 190));
+        JLabel badge = new JLabel("  END-TO-END ENCRYPTED  "); badge.setOpaque(true); badge.setBackground(new Color(220, 242, 232));
+        badge.setForeground(DEEP_GREEN); badge.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10)); badge.setBorder(new EmptyBorder(7, 8, 7, 8));
+        badge.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JLabel title = new JLabel("Your private conversation"); title.setForeground(TEXT); title.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 18)); title.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JLabel description = new JLabel("Messages you send will be encrypted on this device."); description.setForeground(MUTED); description.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12)); description.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JLabel detail = new JLabel("The relay routes ciphertext; only verified peers can decrypt it."); detail.setForeground(MUTED); detail.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11)); detail.setAlignmentX(Component.CENTER_ALIGNMENT);
+        card.add(badge); addGap(card, 16); card.add(title); addGap(card, 7); card.add(description); addGap(card, 4); card.add(detail);
+        outer.add(card); outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 250)); outer.setAlignmentX(Component.CENTER_ALIGNMENT);
+        return outer;
+    }
+
     private JPanel buildCryptoView() {
         JPanel panel = tabPanel("LIVE MESSAGE CRYPTOGRAPHY", "This trace is populated from the sender and receiver callbacks after the real AES-GCM operations.");
         cryptoTrace.setText("Waiting for a real message. No sample ciphertext is generated by the UI.\n\n"
@@ -308,7 +442,9 @@ public final class SecureChatDesktop {
         JPanel panel = tabPanel("LIVE NETWORK COMMUNICATION", "Client → TLS relay → recipient client. The relay receives routing metadata and the opaque SC1 envelope.");
         JLabel route = heading("SENDER DEVICE   →   LOCAL RELAY   →   RECIPIENT DEVICE");
         route.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 16));
-        panel.add(route, BorderLayout.NORTH);
+        JPanel routePanel = new JPanel(new BorderLayout(0, 8)); routePanel.setOpaque(false); routePanel.add(route, BorderLayout.NORTH);
+        networkStage.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 13)); networkStage.setForeground(GREEN); routePanel.add(networkStage, BorderLayout.SOUTH);
+        panel.add(routePanel, BorderLayout.NORTH);
         packetMonitor.setText("Waiting for packet events from the connected ChatClient.\n"
                 + "The handshake provides authenticated client session IDs. Packet identity is sender session ID + sequence; there is no separate message UUID.\n\n");
         panel.add(wrapArea(packetMonitor), BorderLayout.CENTER);
@@ -346,9 +482,12 @@ public final class SecureChatDesktop {
         JPanel actions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 8, 0)); actions.setOpaque(false); actions.add(start); actions.add(stop);
         JPanel north = new JPanel(new BorderLayout(0, 10)); north.setOpaque(false); north.add(body("Eavesdrop, tamper, replay, key substitution and masquerade run as a real local TLS proxy. DoS runs the bounded 20-connection baseline. Do not point this lab at a non-local server."), BorderLayout.NORTH); north.add(controls, BorderLayout.CENTER); north.add(actions, BorderLayout.SOUTH);
         panel.add(north, BorderLayout.NORTH);
+        JPanel outcome = new JPanel(); outcome.setLayout(new BoxLayout(outcome, BoxLayout.Y_AXIS)); outcome.setBackground(Color.WHITE); outcome.setBorder(new EmptyBorder(10, 12, 10, 12));
+        for (JLabel label : List.of(attackExpected, attackObserved, attackDisposition)) { label.setAlignmentX(Component.LEFT_ALIGNMENT); label.setForeground(TEXT); label.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12)); outcome.add(label); }
+        JPanel body = new JPanel(new BorderLayout(0, 10)); body.setOpaque(false); body.add(outcome, BorderLayout.NORTH);
         attackOutput.setText("No attack simulation started from this window yet.\n"
                 + "Proxy modes require SECURECONNECT_TLS_KEYSTORE / trust settings used by the relay. The child process inherits this app's environment.");
-        panel.add(wrapArea(attackOutput), BorderLayout.CENTER);
+        body.add(wrapArea(attackOutput), BorderLayout.CENTER); panel.add(body, BorderLayout.CENTER);
         return panel;
     }
 
@@ -393,6 +532,11 @@ public final class SecureChatDesktop {
             addAttackOutput("Blocked: the attack lab only supports localhost relay targets."); return;
         }
         try {
+            attackOutput.setText("");
+            activeAttackMode = mode; attackStartedAt = Instant.now();
+            setOutcomeLabel(attackExpected, "Expected outcome: " + expectedAttackOutcome(mode));
+            setOutcomeLabel(attackObserved, "Observed outcome: waiting for simulation evidence…");
+            setOutcomeLabel(attackDisposition, "Status: RUNNING");
             String java = Path.of(System.getProperty("java.home"), "bin", "java.exe").toString();
             if (!Files.exists(Path.of(java))) java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
             List<String> command = new ArrayList<>(List.of(java, "-cp", System.getProperty("java.class.path"),
@@ -457,16 +601,26 @@ public final class SecureChatDesktop {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
             String line; while ((line = reader.readLine()) != null) {
                 String output = prefix + line;
-                if (target == attackOutput && line.startsWith("[PROXY_READY]")) {
+                String currentLine = line;
+                if (target == attackOutput && currentLine.startsWith("[PROXY_READY]")) {
                     runOnUi(() -> {
                         appendArea(target, output);
+                        updateAttackObservation(currentLine);
                         relayPortField.setText("5051");
                         addAttackOutput("Proxy is listening. The current direct session will now close; reconnect both users through port 5051.");
                         if (authenticated) inputQueue.offer("/logout");
                     });
-                } else runOnUi(() -> appendArea(target, output));
+                } else runOnUi(() -> {
+                    appendArea(target, output);
+                    if (target == attackOutput) updateAttackObservation(currentLine);
+                });
             }
-            int exit = process.waitFor(); runOnUi(() -> { appendArea(target, "Process exited with code " + exit + "."); if (target == evaluationSummary) refreshEvaluation(); });
+            int exit = process.waitFor(); runOnUi(() -> {
+                appendArea(target, "Process exited with code " + exit + ".");
+                if (target == evaluationSummary) refreshEvaluation();
+                if (target == attackOutput && "dos".equals(activeAttackMode) && exit == 0) setOutcomeLabel(attackDisposition, "Status: COMPLETED • bounded baseline");
+                else if (target == attackOutput && exit != 0) setOutcomeLabel(attackDisposition, "Status: STARTUP FAILED • see process output");
+            });
         } catch (IOException exception) { runOnUi(() -> appendArea(target, "Output stream ended: " + safeMessage(exception))); }
         catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
     }
@@ -608,11 +762,34 @@ public final class SecureChatDesktop {
                     .append(outgoing ? "\nResult: encrypted packet sent to the relay." : "\nResult: GCM authentication passed; plaintext was released locally.");
             cryptoTrace.setText(trace.toString());
             String senderSessionId = sender.equals(currentUsername) ? currentLocalSessionId : currentPeerSessionId;
+            String inspectorKey = sender + ":" + sequence;
+            String messageId = displayId(senderSessionId) + ":" + sequence;
+            String inspectorText = "MESSAGE INSPECTOR\n"
+                    + "Message reference: " + messageId + " (session + sequence; protocol has no separate message UUID)\n"
+                    + "Route: " + sender + " → " + recipient + "\n"
+                    + "Sequence: " + sequence + "\nKey epoch: " + version + "\n"
+                    + "Encryption: AES-256-GCM\nOperation: " + (outgoing ? "encrypted on sender endpoint" : "GCM tag and sequence verified; decrypted on receiver endpoint") + "\n"
+                    + "Measured endpoint operation: " + String.format(Locale.ROOT, "%.3f µs", elapsedNanos / 1000.0) + "\n\n"
+                    + "Nonce / IV (96-bit, hex)\n" + hex(nonce) + "\n\n"
+                    + "Ciphertext (hex)\n" + hex(ciphertext) + "\n\n"
+                    + "Authentication tag (128-bit, hex)\n" + hex(tag) + "\n\n"
+                    + "Envelope (exact protocol value)\n" + envelope + "\n\n"
+                    + "Plaintext (endpoint only; relay cannot read it)\n" + plaintext + "\n\n"
+                    + "Secret keys and private key material are intentionally not displayed.";
+            messageSecurityDetails.put(inspectorKey, inspectorText);
+            selectMessageDetails(inspectorKey);
             appendArea(packetMonitor, (outgoing ? "OUTBOUND" : "INBOUND") + " • " + LocalTime.now().format(CLOCK)
                     + " • msg=" + displayId(senderSessionId) + ":" + sequence + " • epoch=" + version + " • " + envelope.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
                     + " envelope bytes • SC1 ciphertext only at relay • " + sender + " → " + recipient);
             updateKeysOverview();
         } catch (RuntimeException exception) { cryptoTrace.setText("Could not decode the actual message envelope: " + safeMessage(exception)); }
+    }
+
+    private void selectMessageDetails(String key) {
+        String details = messageSecurityDetails.get(key);
+        if (details == null) return;
+        selectedMessageDetails.setText(details);
+        selectedMessageDetails.setCaretPosition(0);
     }
 
     private static String hex(byte[] bytes) { StringBuilder out=new StringBuilder(bytes.length*2); for(byte value:bytes) out.append(String.format(Locale.ROOT,"%02X",value)); return out.toString(); }
@@ -658,11 +835,21 @@ public final class SecureChatDesktop {
             @Override public void onSessionReady(String name, String localSessionId, String peerSessionId) { runOnUi(() -> sessionReady(name, localSessionId, peerSessionId)); }
             @Override public void onKeyVersion(long version) { runOnUi(() -> keyVersion(version)); }
             @Override public void onOutgoingMeasured(String text, String envelope, long sequence, long version, long nanos) {
-                runOnUi(() -> { addMessage(true, text, envelope, sequence, version); updateCryptoTrace(true, currentUsername, currentPeer, text, envelope, sequence, version, nanos); });
+                runOnUi(() -> {
+                    addMessage(true, text, envelope, sequence, version);
+                    updateCryptoTrace(true, currentUsername, currentPeer, text, envelope, sequence, version, nanos);
+                    outgoingUiSequences.add(sequence);
+                    if (earlyNetworkAcks.remove(sequence)) networkRelayAcknowledged(sequence);
+                    else beginNetworkAnimation();
+                });
             }
-            @Override public void onDelivered(String name, long sequence) { runOnUi(() -> markDelivered(sequence)); }
+            @Override public void onDelivered(String name, long sequence) { runOnUi(() -> {
+                markDelivered(sequence);
+                if (outgoingUiSequences.contains(sequence)) networkRelayAcknowledged(sequence);
+                else earlyNetworkAcks.add(sequence);
+            }); }
             @Override public void onIncomingMeasured(String sender, String text, String envelope, long sequence, long version, long nanos) {
-                runOnUi(() -> { addMessage(false, text, envelope, sequence, version); updateCryptoTrace(false, sender, currentUsername, text, envelope, sequence, version, nanos); });
+                runOnUi(() -> { addMessage(false, text, envelope, sequence, version); updateCryptoTrace(false, sender, currentUsername, text, envelope, sequence, version, nanos); networkRecipientVerified(sequence); });
             }
             @Override public void onSecurity(String message) { runOnUi(() -> addActivity("SECURITY", message)); }
             @Override public void onDisconnected() { runOnUi(() -> disconnected()); }
@@ -718,7 +905,7 @@ public final class SecureChatDesktop {
     private void sessionReady(String peer, String localSessionId, String peerSessionId) {
         currentLocalSessionId = localSessionId; currentPeerSessionId = peerSessionId;
         identityVerified = true; e2eeActive = true;
-        pendingMessageTitles.clear(); earlyRelayAcks.clear();
+        pendingMessageTitles.clear(); earlyRelayAcks.clear(); outgoingUiSequences.clear(); earlyNetworkAcks.clear();
         setWrappedLabel(e2eeState, "X25519 + HKDF session active"); setWrappedLabel(pinState, "Ed25519 signature verified");
         sendButton.setEnabled(true); composer.setEnabled(true); composer.requestFocusInWindow();
         addActivity("E2EE", "Pinned identity verified; authenticated ephemeral X25519 key exchange completed with " + peer + ".");
@@ -741,11 +928,14 @@ public final class SecureChatDesktop {
     }
 
     private void addMessage(boolean outgoing, String plaintext, String envelope, long sequence, long version) {
+        if (!hasConversationMessages) { messageList.removeAll(); hasConversationMessages = true; }
         JPanel row = new JPanel(new BorderLayout()); row.setOpaque(false); row.setBorder(new EmptyBorder(4, 0, 4, 0));
         JPanel bubble = new JPanel(new BorderLayout(0, 5)); bubble.setBackground(outgoing ? new Color(216, 247, 198) : Color.WHITE);
         bubble.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(new Color(217, 226, 216)), new EmptyBorder(10, 12, 10, 12)));
         bubble.setMaximumSize(new Dimension(520, 500));
         String senderLabel = outgoing ? "You" : currentPeer;
+        String messageSender = outgoing ? currentUsername : currentPeer;
+        String inspectorKey = messageSender + ":" + sequence;
         String sendState = outgoing && earlyRelayAcks.remove(sequence) ? "RELAY ROUTED" : (outgoing ? "PENDING" : "RECEIVED");
         JLabel title = new JLabel(senderLabel + "  •  " + sendState
                 + "  •  seq " + sequence + "  •  key epoch " + version + "  •  " + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")));
@@ -774,14 +964,22 @@ public final class SecureChatDesktop {
             messageList.revalidate(); messageList.repaint();
         });
         JPanel lower = new JPanel(new BorderLayout()); lower.setOpaque(false); lower.add(inspect, BorderLayout.NORTH); lower.add(detail, BorderLayout.CENTER); bubble.add(lower, BorderLayout.SOUTH);
+        MouseAdapter inspectMessage = new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) { selectMessageDetails(inspectorKey); }
+            @Override public void mouseEntered(MouseEvent event) { bubble.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)); }
+        };
+        for (Component clickable : List.of(row, bubble, title, body)) clickable.addMouseListener(inspectMessage);
+        bubble.setToolTipText("Select this message to inspect its actual cryptographic metadata in the security inspector.");
         row.add(bubble, outgoing ? BorderLayout.EAST : BorderLayout.WEST);
         Dimension bubbleSize = bubble.getPreferredSize();
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, bubbleSize.height + 8));
+        applyTheme(row);
         messageList.add(row); messageList.add(Box.createVerticalStrut(4));
         messageList.revalidate(); messageList.repaint();
         SwingUtilities.invokeLater(() -> { java.awt.Container parent = messageList.getParent(); if (parent instanceof javax.swing.JViewport viewport) viewport.setViewPosition(new java.awt.Point(0, messageList.getHeight())); });
         if (outgoing) { seqState.setText("Last sent sequence " + sequence + " • next key epoch at message " + (sequence / 10 * 10 + 1)); addActivity("MESSAGE", "Encrypted message prepared and sent; relay received only the envelope."); }
         else { seqState.setText("Accepted sequence " + sequence + " • replay guard advanced"); addActivity("VERIFY", "GCM authentication passed and sequence " + sequence + " was accepted before displaying plaintext."); }
+        selectMessageDetails(inspectorKey);
     }
 
     private void markDelivered(long sequence) {
@@ -789,6 +987,42 @@ public final class SecureChatDesktop {
         if (title == null) earlyRelayAcks.add(sequence);
         else title.setText(title.getText().replace("PENDING", "RELAY ROUTED"));
         addActivity("DELIVERY", "Relay routed sequence " + sequence + " to " + currentPeer + "'s active connection (not a read receipt).");
+    }
+
+    private void beginNetworkAnimation() {
+        inboundAnimation = false; networkAnimationStep = 0;
+        networkStage.setText("● Sender   ···   ○ Relay   ···   ○ Recipient");
+        appendArea(packetMonitor, "OUTBOUND • encrypted envelope created on sender • packet moving toward local relay");
+        networkAnimation.start();
+    }
+
+    private void advanceNetworkAnimation() {
+        networkAnimationStep++;
+        if (networkAnimationStep == 1) {
+            networkStage.setText("○ Sender   ···   ● Relay   ···   ○ Recipient");
+        } else if (networkAnimationStep == 2 && inboundAnimation) {
+            networkStage.setText("○ Sender   ━━━   ○ Relay   ━━━   ● Recipient  •  verified");
+        } else {
+            networkAnimation.stop();
+            if (inboundAnimation) {
+                networkStage.setText("✓ Sender   ━━━   ✓ Relay   ━━━   ✓ Recipient  •  tag + sequence verified");
+                inboundAnimation = false;
+            } else networkStage.setText("○ Sender   ···   ● Relay   ···   ○ Recipient  •  waiting for receiver confirmation");
+        }
+    }
+
+    private void networkRelayAcknowledged(long sequence) {
+        networkAnimation.stop();
+        networkStage.setText("✓ Sender   ━━━   ● Relay   ···   ○ Recipient  •  routed, not a read receipt");
+        appendArea(packetMonitor, "RELAY ACK • seq=" + sequence + " • envelope routed to peer connection; recipient has not confirmed decryption here");
+    }
+
+    private void networkRecipientVerified(long sequence) {
+        networkAnimation.stop();
+        inboundAnimation = true; networkAnimationStep = 0;
+        networkStage.setText("● Sender   ···   ○ Relay   ···   ○ Recipient");
+        networkAnimation.start();
+        appendArea(packetMonitor, "INBOUND VERIFIED • seq=" + sequence + " • GCM tag and replay sequence accepted; plaintext displayed locally");
     }
 
     private void addActivity(String category, String text) {
@@ -803,8 +1037,163 @@ public final class SecureChatDesktop {
                 String eventKey = event.timestamp() + "|" + event.type() + "|" + event.actor() + "|" + event.summary();
                 if (seenAuditEvents.add(eventKey)) appendActivity(CLOCK.format(event.timestamp().atZone(java.time.ZoneId.systemDefault()).toLocalTime())
                         + "  " + event.severity() + "  " + event.type() + "  " + event.actor());
+                updateAttackFromAudit(event);
             });
         } catch (IOException exception) { activityList.setText("Could not read local security event log."); }
+    }
+
+    private static String expectedAttackOutcome(String mode) {
+        return switch (mode) {
+            case "eavesdrop" -> "Proxy sees encrypted envelope metadata; plaintext remains unavailable.";
+            case "tamper" -> "Receiver rejects the altered packet when GCM authentication fails.";
+            case "replay" -> "Receiver accepts the original and rejects the duplicate sequence.";
+            case "key-substitution" -> "Peer rejects the modified key announcement signature.";
+            case "masquerade" -> "Relay rejects login under another user's name without that account password.";
+            case "dos" -> "Relay completes a bounded 20-connection baseline; no exhaustion is attempted.";
+            default -> "Run a controlled local attack and inspect its recorded result.";
+        };
+    }
+
+    private void updateAttackObservation(String line) {
+        if (activeAttackMode == null) return;
+        if (line.contains("[PROXY_READY]")) setOutcomeLabel(attackObserved, "Observed outcome: proxy listener ready on localhost:5051.");
+        if (line.contains("[EAVESDROP]")) finishAttack("Observed encrypted envelope metadata; proxy reported no plaintext.", "OBSERVED • confidentiality held");
+        else if (line.contains("[TAMPER]")) setOutcomeLabel(attackObserved, "Observed outcome: proxy altered the first encrypted packet; awaiting receiver validation.");
+        else if (line.contains("[REPLAY] Re-sent")) setOutcomeLabel(attackObserved, "Observed outcome: proxy resent the captured frame; awaiting replay guard.");
+        else if (line.contains("[KEY-SUBSTITUTION]")) setOutcomeLabel(attackObserved, "Observed outcome: proxy changed the signed ephemeral-key announcement; awaiting peer verification.");
+        else if (line.contains("[MASQUERADE] Relay rejected")) finishAttack("Relay rejected the altered claimed username during password verification.", "REJECTED • authentication held");
+        else if (line.contains("[DOS] TLS relay completed")) {
+            finishAttack(line.replace("[ATTACK LAB] ", ""), "COMPLETED • bounded baseline only");
+        }
+    }
+
+    private void updateAttackFromAudit(SecurityEventLog.SecurityEvent event) {
+        Instant started = attackStartedAt;
+        String mode = activeAttackMode;
+        if (started == null || mode == null || event.timestamp().isBefore(started)) return;
+        switch (mode) {
+            case "tamper" -> { if ("MESSAGE_INTEGRITY_REJECTED".equals(event.type())) finishAttack("Recipient rejected the altered envelope after GCM tag verification failed.", "REJECTED • integrity protection held"); }
+            case "replay" -> { if ("REPLAY_REJECTED".equals(event.type())) finishAttack("Recipient rejected the duplicate/out-of-order sequence.", "REJECTED • replay guard held"); }
+            case "key-substitution" -> { if ("PEER_KEY_REJECTED".equals(event.type())) finishAttack("Peer rejected the modified ephemeral-key signature.", "REJECTED • identity verification held"); }
+            case "masquerade" -> { if ("AUTH_FAILED".equals(event.type())) finishAttack("Relay rejected the claimed identity because credentials did not verify.", "REJECTED • account authentication held"); }
+            default -> { }
+        }
+    }
+
+    private void finishAttack(String observed, String disposition) {
+        setOutcomeLabel(attackObserved, "Observed outcome: " + observed);
+        setOutcomeLabel(attackDisposition, "Status: " + disposition);
+    }
+
+    private void setOutcomeLabel(JLabel label, String value) {
+        label.setText(wrappedHtml(value, 105));
+        label.setToolTipText(value);
+    }
+
+    private void applyTheme(Component root) {
+        if (root == frame) {
+            views.setUI(new ChatTabbedPaneUI());
+            views.setBackground(darkMode ? new Color(27, 34, 35) : Color.WHITE);
+            views.setForeground(darkMode ? new Color(225, 233, 230) : TEXT);
+            styleThemeToggle();
+        }
+        if (root instanceof JComponent component) {
+            Color background = component.getBackground();
+            Color foreground = component.getForeground();
+            Color mappedBackground = themedColor(background);
+            Color mappedForeground = themedColor(foreground);
+            if (darkMode && java.util.Objects.equals(mappedBackground, background) && isLightSurface(background)) {
+                mappedBackground = root instanceof JTextArea || root instanceof JTextField
+                        ? new Color(38, 48, 49) : new Color(31, 40, 41);
+            }
+            if (darkMode && foreground != null && java.util.Objects.equals(mappedForeground, foreground)
+                    && foreground.getRed() < 85 && foreground.getGreen() < 95 && foreground.getBlue() < 95) {
+                mappedForeground = new Color(225, 233, 230);
+            }
+            if (mappedBackground != background) component.setBackground(mappedBackground);
+            if (mappedForeground != foreground) component.setForeground(mappedForeground);
+            if (component instanceof JTextArea area) {
+                area.setCaretColor(darkMode ? new Color(225, 233, 230) : TEXT);
+                area.setSelectionColor(darkMode ? new Color(67, 106, 93) : new Color(183, 218, 205));
+            }
+        }
+        if (root instanceof java.awt.Container container) {
+            for (Component child : container.getComponents()) applyTheme(child);
+        }
+        root.repaint();
+    }
+
+    private void styleThemeToggle() {
+        themeToggle.setText(darkMode ? "Light mode" : "Dark mode");
+        themeToggle.setForeground(Color.WHITE);
+        themeToggle.setBackground(darkMode ? new Color(51, 94, 80) : GREEN);
+        themeToggle.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(darkMode ? new Color(87, 201, 169) : DEEP_GREEN),
+                new EmptyBorder(7, 12, 7, 12)));
+    }
+
+    private final class ChatTabbedPaneUI extends BasicTabbedPaneUI {
+        @Override protected void installDefaults() {
+            super.installDefaults();
+            tabAreaInsets = new Insets(5, 8, 0, 8);
+            selectedTabPadInsets = new Insets(2, 5, 2, 5);
+            contentBorderInsets = new Insets(0, 1, 1, 1);
+            lightHighlight = darkMode ? new Color(62, 76, 75) : Color.WHITE;
+            shadow = darkMode ? new Color(44, 57, 57) : new Color(213, 225, 221);
+            darkShadow = darkMode ? new Color(24, 31, 32) : new Color(199, 214, 208);
+            focus = darkMode ? new Color(87, 201, 169) : GREEN;
+        }
+
+        @Override protected void paintTabBackground(Graphics graphics, int placement, int index,
+                                                     int x, int y, int width, int height, boolean selected) {
+            Color fill = darkMode
+                    ? (selected ? new Color(38, 48, 49) : new Color(31, 40, 41))
+                    : (selected ? Color.WHITE : new Color(229, 239, 235));
+            graphics.setColor(fill);
+            graphics.fillRect(x, y, width, height);
+        }
+
+        @Override protected void paintTabBorder(Graphics graphics, int placement, int index,
+                                                 int x, int y, int width, int height, boolean selected) {
+            graphics.setColor(darkMode ? new Color(62, 76, 75) : new Color(213, 225, 221));
+            graphics.drawRect(x, y, width, height);
+            if (selected && placement == JTabbedPane.TOP) {
+                graphics.setColor(darkMode ? new Color(87, 201, 169) : GREEN);
+                graphics.fillRect(x + 1, y + height - 3, Math.max(0, width - 1), 3);
+            }
+        }
+    }
+
+    private static boolean isLightSurface(Color color) {
+        return color != null && color.getRed() > 215 && color.getGreen() > 215 && color.getBlue() > 215;
+    }
+
+    private Color themedColor(Color color) {
+        if (color == null) return null;
+        if (darkMode) {
+            if (color.equals(APP_BG) || color.equals(new Color(232, 241, 236))) return new Color(24, 31, 32);
+            if (color.equals(SIDEBAR) || color.equals(new Color(242, 245, 242)) || color.equals(new Color(241, 246, 243))) return new Color(31, 40, 41);
+            if (color.equals(CHAT_BG)) return new Color(27, 34, 35);
+            if (color.equals(Color.WHITE) || color.equals(new Color(244, 247, 245))) return new Color(38, 48, 49);
+            if (color.equals(new Color(216, 247, 198))) return new Color(39, 77, 61);
+            if (color.equals(new Color(183, 218, 205))) return new Color(51, 94, 80);
+            if (color.equals(LINE) || color.equals(new Color(217, 226, 216))) return new Color(62, 76, 75);
+            if (color.equals(TEXT) || color.equals(new Color(55, 73, 76))) return new Color(225, 233, 230);
+            if (color.equals(MUTED)) return new Color(170, 184, 181);
+            if (color.equals(GREEN) || color.equals(DEEP_GREEN)) return new Color(87, 201, 169);
+        } else {
+            if (color.equals(new Color(24, 31, 32))) return APP_BG;
+            if (color.equals(new Color(31, 40, 41))) return SIDEBAR;
+            if (color.equals(new Color(27, 34, 35))) return CHAT_BG;
+            if (color.equals(new Color(38, 48, 49))) return Color.WHITE;
+            if (color.equals(new Color(39, 77, 61))) return new Color(216, 247, 198);
+            if (color.equals(new Color(51, 94, 80))) return new Color(183, 218, 205);
+            if (color.equals(new Color(62, 76, 75))) return LINE;
+            if (color.equals(new Color(225, 233, 230))) return TEXT;
+            if (color.equals(new Color(170, 184, 181))) return MUTED;
+            if (color.equals(new Color(87, 201, 169))) return GREEN;
+        }
+        return color;
     }
 
     private void appendActivity(String line) {
@@ -823,7 +1212,7 @@ public final class SecureChatDesktop {
         currentKeyVersion = -1;
         setWrappedLabel(e2eeState, "Waiting for authenticated session");
         setWrappedLabel(keyState, "Key epoch: —");
-        pendingMessageTitles.clear(); earlyRelayAcks.clear();
+        pendingMessageTitles.clear(); earlyRelayAcks.clear(); outgoingUiSequences.clear(); earlyNetworkAcks.clear();
         connectionLabel.setText("DISCONNECTED"); connectionLabel.setForeground(new Color(175, 75, 71));
         setStatus("Disconnected. Close and reopen SecureConnect to reconnect with a new account session.");
         addActivity("SESSION", "TLS account session closed; end-to-end session keys are no longer available.");
@@ -878,7 +1267,12 @@ public final class SecureChatDesktop {
     }
     private static String htmlEscape(String value) { return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"); }
     private static JLabel formLabel(String value) { JLabel label = new JLabel(value); label.setForeground(MUTED); label.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10)); label.setAlignmentX(0f); return label; }
-    private static void styleField(javax.swing.JComponent field) { field.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38)); field.setAlignmentX(0f); field.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(7, 9, 7, 9))); }
+    private static void styleField(javax.swing.JComponent field) {
+        field.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38)); field.setAlignmentX(0f);
+        field.setOpaque(true); field.setBackground(Color.WHITE); field.setForeground(TEXT);
+        if (field instanceof javax.swing.text.JTextComponent text) text.setCaretColor(GREEN);
+        field.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(LINE), new EmptyBorder(7, 9, 7, 9)));
+    }
     private static void addGap(JPanel panel, int height) { panel.add(Box.createRigidArea(new Dimension(1, height))); }
     private static int parsePort(String value) { try { int port = Integer.parseInt(value); if (port < 1 || port > 65535) throw new IllegalArgumentException("port must be between 1 and 65535"); return port; } catch (NumberFormatException exception) { throw new IllegalArgumentException("port must be a number"); } }
     private static String safeMessage(Exception exception) { return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage(); }
