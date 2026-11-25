@@ -14,7 +14,6 @@ import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
 import javax.swing.JTextArea;
-import javax.swing.RowFilter;
 import javax.swing.SwingConstants;
 import javax.swing.SwingWorker;
 import javax.swing.Timer;
@@ -69,16 +68,15 @@ public final class SecurityDashboard {
             new String[]{"All severities", "INFO", "WARNING", "CRITICAL"});
     private final JComboBox<String> categoryFilter = new JComboBox<>(new String[]{
             "All categories", "Authentication", "Encryption", "Sessions", "Attacks", "Network"});
-    private final JLabel pageLabel = new JLabel("Page 1 of 1");
-    private final JLabel detailTitle = new JLabel("Select an event");
+    private final JLabel tableStatus = new JLabel("All events");
+    private final JLabel detailTitle = new JLabel("Event inspector");
     private final JTextArea eventDetails = new JTextArea();
     private final JPanel detailPanel = new JPanel(new BorderLayout(0, 10));
     private final ActivityChart activityChart = new ActivityChart();
     private final SeverityChart severityChart = new SeverityChart();
     private List<SecurityEvent> allEvents = List.of();
     private List<SecurityEvent> filteredEvents = List.of();
-    private int currentPage;
-    private static final int PAGE_SIZE = 50;
+    private String selectedEventId;
     private boolean refreshInProgress;
     private boolean paused;
     private final Timer refreshTimer = new Timer(2_000, event -> refresh());
@@ -151,13 +149,16 @@ public final class SecurityDashboard {
         JButton pauseButton = new JButton("Ⅱ  Pause");
         styleButton(pauseButton);
         pauseButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
-        pauseButton.setBorder(new EmptyBorder(6, 10, 6, 10));
+        pauseButton.setPreferredSize(new Dimension(104, 34));
+        pauseButton.setBorder(new EmptyBorder(5, 9, 5, 9));
         pauseButton.addActionListener(event -> {
             paused = !paused;
             pauseButton.setText(paused ? "▶  Resume" : "Ⅱ  Pause");
             status.setText(paused ? "Updates paused" : "Watching " + SecurityEventLog.logPath());
         });
-        titleBlock.add(pauseButton, BorderLayout.EAST);
+        JPanel pauseTools = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 0, 0));
+        pauseTools.setOpaque(false); pauseTools.add(pauseButton);
+        titleBlock.add(pauseTools, BorderLayout.EAST);
         header.add(titleBlock, BorderLayout.NORTH);
 
         JPanel cards = new JPanel(new GridLayout(1, 4, 12, 0));
@@ -246,23 +247,24 @@ public final class SecurityDashboard {
         scroll.getViewport().setBackground(PANEL);
         scroll.setBorder(BorderFactory.createLineBorder(BORDER));
         leftContent.add(scroll, BorderLayout.CENTER);
-        JPanel pageControls = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 8, 0));
-        pageControls.setOpaque(false);
-        JButton previous = new JButton("← Previous"); styleOutlineButton(previous);
-        JButton next = new JButton("Next →"); styleOutlineButton(next);
-        pageLabel.setForeground(MUTED); pageLabel.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
-        previous.addActionListener(event -> { if (currentPage > 0) { currentPage--; showCurrentPage(); } });
-        next.addActionListener(event -> { if ((currentPage + 1) * PAGE_SIZE < filteredEvents.size()) { currentPage++; showCurrentPage(); } });
-        pageControls.add(pageLabel); pageControls.add(previous); pageControls.add(next);
-        leftContent.add(pageControls, BorderLayout.SOUTH);
+        JPanel tableFooter = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 8, 2));
+        tableFooter.setOpaque(false);
+        tableStatus.setForeground(MUTED); tableStatus.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
+        tableFooter.add(tableStatus);
+        leftContent.add(tableFooter, BorderLayout.SOUTH);
 
         detailPanel.setBackground(new Color(248, 251, 249));
         detailPanel.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(BORDER), new EmptyBorder(12, 12, 12, 12)));
         detailTitle.setForeground(TEXT); detailTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
-        detailPanel.add(detailTitle, BorderLayout.NORTH);
+        JLabel detailHint = new JLabel("Select a row to inspect its recorded fields.");
+        detailHint.setForeground(MUTED); detailHint.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10));
+        JPanel detailHeading = new JPanel(new BorderLayout(0, 5)); detailHeading.setOpaque(false);
+        detailHeading.add(detailTitle, BorderLayout.NORTH); detailHeading.add(detailHint, BorderLayout.SOUTH);
+        detailPanel.add(detailHeading, BorderLayout.NORTH);
         eventDetails.setEditable(false); eventDetails.setLineWrap(true); eventDetails.setWrapStyleWord(true);
         eventDetails.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11)); eventDetails.setForeground(TEXT);
         eventDetails.setBackground(new Color(248, 251, 249)); eventDetails.setBorder(new EmptyBorder(3, 0, 3, 0));
+        eventDetails.setText("Choose any audit row.\n\nThis panel shows the entry ID, time, severity, category, actor, event type, and details.\n\nSession and message IDs are shown only when the audit record contains them.");
         detailPanel.add(new JScrollPane(eventDetails), BorderLayout.CENTER);
         detailPanel.setPreferredSize(new Dimension(275, 0));
         table.getSelectionModel().addListSelectionListener(event -> {
@@ -321,22 +323,35 @@ public final class SecurityDashboard {
                     + event.type() + " " + event.actor() + " " + event.summary()).toLowerCase(Locale.ROOT);
             return severityMatch && categoryMatch && (needle.isEmpty() || searchable.contains(needle));
         }).toList();
-        currentPage = 0;
-        showCurrentPage();
+        showFilteredEvents();
         activityChart.repaint(); severityChart.repaint();
     }
 
-    private void showCurrentPage() {
-        int start = Math.min(currentPage * PAGE_SIZE, filteredEvents.size());
-        int end = Math.min(start + PAGE_SIZE, filteredEvents.size());
-        model.setEvents(filteredEvents.subList(start, end));
-        int pages = Math.max(1, (filteredEvents.size() + PAGE_SIZE - 1) / PAGE_SIZE);
-        pageLabel.setText("Showing " + (filteredEvents.isEmpty() ? 0 : start + 1) + "–" + end + " of " + filteredEvents.size()
-                + "  •  Page " + (currentPage + 1) + "/" + pages);
+    private void showFilteredEvents() {
+        model.setEvents(filteredEvents);
+        tableStatus.setText("Showing all " + filteredEvents.size() + " matching events • click a column to sort");
         table.clearSelection();
+        if (selectedEventId != null) {
+            int modelIndex = -1;
+            for (int i = 0; i < model.getRowCount(); i++) {
+                if (selectedEventId.equals(model.eventAt(i).id())) { modelIndex = i; break; }
+            }
+            if (modelIndex >= 0) {
+                for (int viewIndex = 0; viewIndex < table.getRowCount(); viewIndex++) {
+                    if (table.convertRowIndexToModel(viewIndex) == modelIndex) {
+                        table.setRowSelectionInterval(viewIndex, viewIndex);
+                        break;
+                    }
+                }
+            } else {
+                selectedEventId = null;
+                showInspectorPlaceholder();
+            }
+        }
     }
 
     private void showEventDetails(SecurityEvent event) {
+        selectedEventId = event.id();
         detailTitle.setText(event.type().replace('_', ' '));
         String severity = event.severity() == Severity.ALERT ? "CRITICAL (logged as ALERT)" : event.severity().name();
         eventDetails.setText("TIME\n" + TIME_FORMAT.format(event.timestamp())
@@ -347,6 +362,12 @@ public final class SecurityDashboard {
                 + "\n\nEVENT\n" + event.type()
                 + "\n\nDETAILS\n" + event.summary()
                 + "\n\nSESSION / MESSAGE\nNot recorded in this audit entry.");
+        eventDetails.setCaretPosition(0);
+    }
+
+    private void showInspectorPlaceholder() {
+        detailTitle.setText("Event inspector");
+        eventDetails.setText("Choose any audit row.\n\nThis panel shows the entry ID, time, severity, category, actor, event type, and details.\n\nSession and message IDs are shown only when the audit record contains them.");
         eventDetails.setCaretPosition(0);
     }
 
@@ -503,25 +524,37 @@ public final class SecurityDashboard {
             java.awt.Graphics2D g = (java.awt.Graphics2D) graphics.create();
             try {
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g.setColor(TEXT); g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10)); g.drawString("EVENT ACTIVITY • 24H", 6, 12);
+                g.setColor(TEXT); g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 10)); g.drawString("EVENT ACTIVITY • LOADED TIME RANGE", 6, 12);
                 int left = 28, top = 26, bottom = getHeight() - 22, plotWidth = getWidth() - 42;
-                int[] buckets = new int[12]; java.time.Instant now = java.time.Instant.now();
+                int[] buckets = new int[12];
+                java.time.Instant min = allEvents.stream().map(SecurityEvent::timestamp).min(java.time.Instant::compareTo).orElse(java.time.Instant.now());
+                java.time.Instant maxTime = allEvents.stream().map(SecurityEvent::timestamp).max(java.time.Instant::compareTo).orElse(min.plusSeconds(3600));
+                long rangeMillis = Math.max(1, java.time.Duration.between(min, maxTime).toMillis());
                 for (SecurityEvent event : allEvents) {
-                    long age = java.time.Duration.between(event.timestamp(), now).toMinutes();
-                    if (age >= 0 && age < 1440) buckets[11 - (int) (age / 120)]++;
+                    long offset = Math.max(0, java.time.Duration.between(min, event.timestamp()).toMillis());
+                    int bucket = (int) Math.min(buckets.length - 1, (offset * buckets.length) / rangeMillis);
+                    buckets[bucket]++;
                 }
                 int maximum = Math.max(1, java.util.Arrays.stream(buckets).max().orElse(1));
                 g.setColor(BORDER); g.drawLine(left, bottom, left + plotWidth, bottom);
                 g.setColor(ACCENT); g.setStroke(new BasicStroke(2f));
+                int[] xPoints = new int[buckets.length + 2], yPoints = new int[buckets.length + 2];
+                xPoints[0] = left; yPoints[0] = bottom;
                 int previousX = -1, previousY = -1;
                 for (int i = 0; i < buckets.length; i++) {
                     int x = left + (buckets.length == 1 ? 0 : i * plotWidth / (buckets.length - 1));
                     int y = bottom - (int) ((double) buckets[i] / maximum * Math.max(12, bottom - top));
+                    xPoints[i + 1] = x; yPoints[i + 1] = y;
                     if (previousX >= 0) g.drawLine(previousX, previousY, x, y);
                     g.fillOval(x - 3, y - 3, 6, 6); previousX = x; previousY = y;
                 }
+                xPoints[xPoints.length - 1] = left + plotWidth; yPoints[yPoints.length - 1] = bottom;
+                g.setColor(new Color(0, 132, 111, 22)); g.fillPolygon(xPoints, yPoints, xPoints.length);
                 g.setColor(MUTED); g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 9));
-                g.drawString("24h ago", left, getHeight() - 5); g.drawString("now", left + plotWidth - 20, getHeight() - 5);
+                DateTimeFormatter axis = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault());
+                String from = axis.format(min), to = axis.format(maxTime);
+                g.drawString(from, left, getHeight() - 5);
+                g.drawString(to, Math.max(left, left + plotWidth - g.getFontMetrics().stringWidth(to)), getHeight() - 5);
             } finally { g.dispose(); }
         }
     }
@@ -536,16 +569,35 @@ public final class SecurityDashboard {
                 long critical = allEvents.stream().filter(event -> event.severity() == Severity.ALERT).count();
                 long warning = allEvents.stream().filter(event -> event.severity() == Severity.WARNING).count();
                 long info = allEvents.stream().filter(event -> event.severity() == Severity.INFO).count();
-                long max = Math.max(1, Math.max(critical, Math.max(warning, info)));
-                long[] counts = {critical, warning, info}; String[] labels = {"Critical (alert)", "Warning", "Info"};
-                Color[] colors = {new Color(183, 47, 60), new Color(212, 130, 18), ACCENT};
-                int y = 34;
-                for (int i = 0; i < counts.length; i++, y += 31) {
-                    g.setColor(MUTED); g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10)); g.drawString(labels[i], 7, y + 10);
-                    int trackX = 105, trackW = Math.max(25, getWidth() - trackX - 52);
-                    g.setColor(new Color(236, 242, 239)); g.fillRoundRect(trackX, y, trackW, 13, 8, 8);
-                    g.setColor(colors[i]); g.fillRoundRect(trackX, y, (int) (trackW * counts[i] / max), 13, 8, 8);
-                    g.setColor(TEXT); g.drawString(Long.toString(counts[i]), trackX + trackW + 8, y + 11);
+                long total = critical + warning + info;
+                long[] counts = {critical, warning, info};
+                String[] labels = {"Critical", "Warning", "Info"};
+                Color[] colors = {new Color(194, 55, 67), new Color(220, 145, 37), ACCENT};
+                int diameter = Math.max(72, Math.min(104, getHeight() - 38));
+                int x = 18, y = 29;
+                double start = 90.0;
+                for (int i = 0; i < counts.length; i++) {
+                    double extent = total == 0 ? -120 : -360.0 * counts[i] / total;
+                    g.setColor(total == 0 ? BORDER : colors[i]);
+                    g.fill(new java.awt.geom.Arc2D.Double(x, y, diameter, diameter, start, extent, java.awt.geom.Arc2D.PIE));
+                    start += extent;
+                }
+                int hole = diameter / 2;
+                g.setColor(PANEL); g.fillOval(x + (diameter - hole) / 2, y + (diameter - hole) / 2, hole, hole);
+                g.setColor(TEXT); g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
+                String totalLabel = Long.toString(total);
+                g.drawString(totalLabel, x + (diameter - g.getFontMetrics().stringWidth(totalLabel)) / 2, y + diameter / 2 + 5);
+                g.setColor(MUTED); g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 8));
+                String centerLabel = "EVENTS";
+                g.drawString(centerLabel, x + (diameter - g.getFontMetrics().stringWidth(centerLabel)) / 2, y + diameter / 2 + 17);
+                int legendX = x + diameter + 24;
+                int rowY = 47;
+                for (int i = 0; i < counts.length; i++, rowY += 25) {
+                    g.setColor(colors[i]); g.fillOval(legendX, rowY - 7, 8, 8);
+                    g.setColor(TEXT); g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10));
+                    g.drawString(labels[i], legendX + 14, rowY);
+                    String value = Long.toString(counts[i]);
+                    g.setColor(MUTED); g.drawString(value, getWidth() - g.getFontMetrics().stringWidth(value) - 10, rowY);
                 }
             } finally { g.dispose(); }
         }
