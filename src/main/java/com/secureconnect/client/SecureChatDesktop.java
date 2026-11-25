@@ -391,7 +391,7 @@ public final class SecureChatDesktop {
         JLabel selectedTitle = new JLabel("SELECTED MESSAGE"); selectedTitle.setForeground(GREEN);
         selectedTitle.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11)); selectedTitle.setBorder(new EmptyBorder(14, 0, 2, 0));
         selectedTitle.setAlignmentX(Component.LEFT_ALIGNMENT); security.add(selectedTitle);
-        selectedMessageDetails.setRows(8); selectedMessageDetails.setLineWrap(true); selectedMessageDetails.setWrapStyleWord(true);
+        selectedMessageDetails.setRows(8); selectedMessageDetails.setLineWrap(true); selectedMessageDetails.setWrapStyleWord(false);
         selectedMessageDetails.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 10)); selectedMessageDetails.setForeground(TEXT);
         selectedMessageDetails.setBackground(new Color(241, 246, 243)); selectedMessageDetails.setBorder(new EmptyBorder(8, 8, 8, 8));
         selectedMessageDetails.setText("Select a message to inspect its actual envelope, nonce, tag, sequence and operation timing.");
@@ -524,7 +524,7 @@ public final class SecureChatDesktop {
     }
 
     private static JScrollPane wrapArea(JTextArea area) {
-        area.setEditable(false); area.setLineWrap(true); area.setWrapStyleWord(true); area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        area.setEditable(false); area.setLineWrap(true); area.setWrapStyleWord(false); area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         area.setBackground(Color.WHITE); area.setForeground(TEXT); area.setBorder(new EmptyBorder(12, 12, 12, 12));
         JScrollPane scroll = new JScrollPane(area); scroll.setBorder(BorderFactory.createLineBorder(LINE)); return scroll;
     }
